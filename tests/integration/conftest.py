@@ -153,13 +153,15 @@ def start_storage_node(tmp_path, servers):
 
 @pytest.fixture
 def start_coordinator(tmp_path, servers):
-    def _start(heartbeat_interval_ms: int = 200, heartbeat_timeout_ms: int = 1000) -> Server:
+    def _start(
+        heartbeat_interval_ms: int = 200, heartbeat_timeout_ms: int = 1000, port: Optional[int] = None
+    ) -> Server:
         env = {
             "HEARTBEAT_INTERVAL_MS": str(heartbeat_interval_ms),
             "HEARTBEAT_TIMEOUT_MS": str(heartbeat_timeout_ms),
             "LOG_LEVEL": "DEBUG",
         }
-        server = Server("coordinator", env, tmp_path)
+        server = Server("coordinator", env, tmp_path, port=port)
         servers.append(server)
         return server.start()
 
