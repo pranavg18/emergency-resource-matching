@@ -29,6 +29,11 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
+def _port_in_use(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
 def _command(component: str, port: int) -> list[str]:
     package = {"storage-node": "storage_node", "coordinator": "coordinator"}[component]
     return [
@@ -62,9 +67,12 @@ class Server:
     def start(self) -> "Server":
         env = {**os.environ, **self.env}
         log_file = open(self.log_path, "ab")
+        # Own process group, so stop() and kill() reach gunicorn's worker too,
+        # not only its master. A kill then behaves like a container dying.
         self.proc = subprocess.Popen(
             _command(self.component, self.port),
             cwd=REPO_ROOT, env=env, stdout=log_file, stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
         log_file.close()
         deadline = time.monotonic() + START_TIMEOUT_S
@@ -83,12 +91,18 @@ class Server:
     def stop(self, sig: int = signal.SIGTERM) -> None:
         if self.proc is None or self.proc.poll() is not None:
             return
-        self.proc.send_signal(sig)
+        try:
+            os.killpg(self.proc.pid, sig)
+        except ProcessLookupError:
+            pass
         try:
             self.proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            self.proc.kill()
+            os.killpg(self.proc.pid, signal.SIGKILL)
             self.proc.wait(timeout=5)
+        if sig == signal.SIGKILL:
+            # The killed worker may outlive the master briefly; wait for the port.
+            wait_until(lambda: not _port_in_use(self.port), timeout=5)
 
     def kill(self) -> None:
         self.stop(signal.SIGKILL)

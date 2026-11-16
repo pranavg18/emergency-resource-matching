@@ -4,16 +4,64 @@ Each thread gets its own connection; the file runs in WAL mode so readers do
 not block the writer. Writes that read before they write run inside one
 `BEGIN IMMEDIATE` transaction, which takes the write lock up front and makes
 the check-then-write atomic across threads.
+
+Values are opaque strings: stored and returned exactly as received, never
+parsed. Versions and the deleted flag live in their own columns.
 """
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
-from typing import Iterator
+from dataclasses import dataclass
+from typing import Iterator, Optional
+
+from .timefmt import now_rfc3339
 
 BUSY_TIMEOUT_S = 5.0
+
+KEY_PATTERN = re.compile(
+    r"^(request|resource):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS kv (
+    key        TEXT    PRIMARY KEY,
+    value      TEXT    NOT NULL,
+    version    INTEGER NOT NULL,
+    deleted    INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT    NOT NULL
+)
+"""
+
+
+@dataclass(frozen=True)
+class Record:
+    key: str
+    value: str
+    version: int
+    deleted: bool
+    updated_at: str
+
+    def envelope(self) -> dict:
+        return {
+            "key": self.key,
+            "value": self.value,
+            "version": self.version,
+            "deleted": self.deleted,
+            "updated_at": self.updated_at,
+        }
+
+
+class NotFound(Exception):
+    """The key does not exist, or holds only a tombstone."""
+
+
+def _record(row) -> Record:
+    key, value, version, deleted, updated_at = row
+    return Record(key, value, version, bool(deleted), updated_at)
 
 
 class Store:
@@ -22,6 +70,7 @@ class Store:
         self._local = threading.local()
         conn = self._conn()
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(SCHEMA)
 
     def _connect(self) -> sqlite3.Connection:
         # isolation_level=None: autocommit, transactions are explicit.
@@ -47,3 +96,42 @@ class Store:
 
     def ping(self) -> None:
         self._conn().execute("SELECT 1").fetchone()
+
+    @staticmethod
+    def _version_of(conn: sqlite3.Connection, key: str) -> tuple[int, bool]:
+        """(current version, deleted); (0, False) for a key never written."""
+        row = conn.execute("SELECT version, deleted FROM kv WHERE key = ?", (key,)).fetchone()
+        return (row[0], bool(row[1])) if row else (0, False)
+
+    def get(self, key: str) -> Optional[Record]:
+        """The stored row, tombstones included; None if the key was never written."""
+        row = self._conn().execute(
+            "SELECT key, value, version, deleted, updated_at FROM kv WHERE key = ?", (key,)
+        ).fetchone()
+        return _record(row) if row else None
+
+    def put(self, key: str, value: str) -> Record:
+        """Write as primary: store the value under the next version."""
+        with self._write_tx() as conn:
+            current, _ = self._version_of(conn, key)
+            record = Record(key, value, current + 1, False, now_rfc3339())
+            conn.execute(
+                "INSERT INTO kv (key, value, version, deleted, updated_at) VALUES (?, ?, ?, 0, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, version = excluded.version, "
+                "deleted = 0, updated_at = excluded.updated_at",
+                (key, value, record.version, record.updated_at),
+            )
+        return record
+
+    def delete(self, key: str) -> Record:
+        """Delete as primary: replace the row with a tombstone under the next version."""
+        with self._write_tx() as conn:
+            current, deleted = self._version_of(conn, key)
+            if current == 0 or deleted:
+                raise NotFound(key)
+            record = Record(key, "", current + 1, True, now_rfc3339())
+            conn.execute(
+                "UPDATE kv SET value = '', version = ?, deleted = 1, updated_at = ? WHERE key = ?",
+                (record.version, record.updated_at, key),
+            )
+        return record
