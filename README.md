@@ -1,23 +1,44 @@
 # Distributed Emergency Resource Matching System
 
-A distributed system that connects people who need emergency help (water, food, medicine, transportation, shelter) with available volunteers and resources. Requests are stored in a sharded, replicated key-value store, published to RabbitMQ, and matched asynchronously to the nearest available resource of the right type. Everything runs as containers on Kubernetes.
+Day 1 setup for Aksha, based on Pranav's storage branch at `0869818`.
 
-Cloud Computing course project by Pranav Goyal and Aksha Alkesh Jain.
+## Scope
 
-## Status
+Shared request/resource validation, status-transition rules, JSON HTTP logging,
+three Flask service skeletons with Dockerfiles, Compose and CI. Pranav's environment
+configuration, storage CRUD/CAS/scan, registration and coordinator registry are included.
+Business endpoints, coordinator routing, RabbitMQ matching, replication and recovery
+are later milestones. A second node remains SYNCING until recovery sync is implemented.
+Storage values in Pranav's API are JSON-encoded strings; the future storage client must
+serialize/deserialize them. Public request/resource/match endpoints currently return 404.
 
-Phase 0 — setup and contracts. See the roadmap in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+## Run
 
-## Architecture at a glance
+Requires Docker Desktop with Linux containers. From this directory:
 
-- **3 microservices:** `request-service`, `resource-service`, `matching-service` (Python, Flask)
-- **Storage layer:** 1 coordinator, 3 shards, each with a primary and a replica (SQLite per node)
-- **Messaging:** 1 RabbitMQ instance between request processing and matching
-- **Deployment:** Docker Compose for local development, Kubernetes (Minikube) for the demo
+```powershell
+Copy-Item .env.example .env
+docker compose up -d --build
+docker compose ps
+Invoke-RestMethod http://localhost:8088/healthz
+Invoke-RestMethod http://localhost:8008/cluster
+```
 
-## Documents
+Compose uses the separate `emergency-day1` project and ports 8088, 8008 and 15678,
+so it can coexist with the full local prototype. RabbitMQ management is at
+http://localhost:15678 (local development login: emergency / local-dev).
+Each Python container exposes /healthz and /readyz internally. Storage uses six
+persistent named volumes. `docker compose down` stops the stack and preserves data.
 
-- [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) — design, ownership, roadmap
-- [docs/VIVA_NOTES.md](docs/VIVA_NOTES.md) — talking points for the demo and viva
+## Verify
 
-Setup, run and test instructions will be added as the components land.
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python -m ruff check .
+.\.venv\Scripts\python -m pytest tests/unit -q
+```
+
+The existing process integration tests require Linux (gunicorn); GitHub Actions runs
+all tests on Ubuntu. Use `make up`, `make down`, `make lint`, `make test` where Make
+is available. See IMPLEMENTATION_PLAN.md for the roadmap and docs/VIVA_NOTES.md.
