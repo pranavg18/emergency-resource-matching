@@ -12,6 +12,7 @@ from flask import Flask, request
 
 from . import web
 from .config import NodeConfig
+from .heartbeat import HeartbeatClient
 from .store import KEY_PATTERN, SCAN_PREFIXES, NotFound, Store, VersionConflict
 from .web import ApiError, invalid, json_body
 
@@ -144,6 +145,10 @@ def create_app(config: Optional[NodeConfig] = None) -> Flask:
     @app.get("/internal/stats")
     def stats():
         return {"node_id": config.node_id, "shard": config.shard, **store.stats()}
+
+    # gunicorn calls create_app() inside its single worker process, so the
+    # thread lives in the process that serves requests.
+    HeartbeatClient(config, max_version=lambda: store.stats()["max_version"]).start()
 
     log.info("storage node %s (shard %d) started, data in %s", config.node_id, config.shard, config.db_path)
     return app
