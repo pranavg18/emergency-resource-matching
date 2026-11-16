@@ -30,9 +30,6 @@ data/
 .vscode/
 *.swp
 
-# Claude Code local settings
-.claude/
-
 # Planning leftovers that do not belong in the repo
 plan_feedback/
 AKSHA_IMPLEMENTATION_PLAN.md
