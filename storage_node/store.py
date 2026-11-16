@@ -55,8 +55,24 @@ class Record:
         }
 
 
+SCAN_PREFIXES = ("request:", "resource:")
+
+
 class NotFound(Exception):
     """The key does not exist, or holds only a tombstone."""
+
+
+class VersionConflict(Exception):
+    """`if_version` did not match the key's current version."""
+
+    def __init__(self, current_version: int):
+        super().__init__(f"current version is {current_version}")
+        self.current_version = current_version
+
+
+def _check_expected(current: int, if_version: Optional[int]) -> None:
+    if if_version is not None and if_version != current:
+        raise VersionConflict(current)
 
 
 def _record(row) -> Record:
@@ -110,10 +126,15 @@ class Store:
         ).fetchone()
         return _record(row) if row else None
 
-    def put(self, key: str, value: str) -> Record:
-        """Write as primary: store the value under the next version."""
+    def put(self, key: str, value: str, if_version: Optional[int] = None) -> Record:
+        """Write as primary: store the value under the next version.
+
+        With `if_version`, write only if the key's current version equals it
+        (0 = never written; a tombstone's version counts as current).
+        """
         with self._write_tx() as conn:
             current, _ = self._version_of(conn, key)
+            _check_expected(current, if_version)
             record = Record(key, value, current + 1, False, now_rfc3339())
             conn.execute(
                 "INSERT INTO kv (key, value, version, deleted, updated_at) VALUES (?, ?, ?, 0, ?) "
@@ -123,15 +144,36 @@ class Store:
             )
         return record
 
-    def delete(self, key: str) -> Record:
+    def delete(self, key: str, if_version: Optional[int] = None) -> Record:
         """Delete as primary: replace the row with a tombstone under the next version."""
         with self._write_tx() as conn:
             current, deleted = self._version_of(conn, key)
             if current == 0 or deleted:
                 raise NotFound(key)
+            _check_expected(current, if_version)
             record = Record(key, "", current + 1, True, now_rfc3339())
             conn.execute(
                 "UPDATE kv SET value = '', version = ?, deleted = 1, updated_at = ? WHERE key = ?",
                 (record.version, record.updated_at, key),
             )
         return record
+
+    def scan(self, prefix: str) -> list[Record]:
+        """Live records whose key starts with `prefix`, ordered by key."""
+        if prefix not in SCAN_PREFIXES:
+            raise ValueError(f"unsupported prefix {prefix!r}")
+        # Range on the primary key instead of LIKE, which ignores case and
+        # cannot use the index. ';' is the character after ':'.
+        upper = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+        rows = self._conn().execute(
+            "SELECT key, value, version, deleted, updated_at FROM kv "
+            "WHERE key >= ? AND key < ? AND deleted = 0 ORDER BY key",
+            (prefix, upper),
+        ).fetchall()
+        return [_record(row) for row in rows]
+
+    def stats(self) -> dict:
+        keys, tombstones, max_version = self._conn().execute(
+            "SELECT COALESCE(SUM(deleted = 0), 0), COALESCE(SUM(deleted = 1), 0), COALESCE(MAX(version), 0) FROM kv"
+        ).fetchone()
+        return {"keys": keys, "tombstones": tombstones, "max_version": max_version}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sqlite3
 from typing import Optional
 
@@ -11,10 +12,11 @@ from flask import Flask, request
 
 from . import web
 from .config import NodeConfig
-from .store import KEY_PATTERN, NotFound, Store
+from .store import KEY_PATTERN, SCAN_PREFIXES, NotFound, Store, VersionConflict
 from .web import ApiError, invalid, json_body
 
 log = logging.getLogger(__name__)
+_DIGITS = re.compile(r"^[0-9]+$")
 
 
 def _checked_key(key: str) -> str:
@@ -46,8 +48,34 @@ def _flag(name: str) -> bool:
     return lowered == "true"
 
 
+def _body_version(body: dict) -> Optional[int]:
+    """`if_version` from a JSON body: absent/null, or an integer >= 0."""
+    raw = body.get("if_version")
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise invalid("if_version must be an integer >= 0")
+    return raw
+
+
+def _query_version() -> Optional[int]:
+    """`if_version` from the query string."""
+    raw = request.args.get("if_version")
+    if raw is None:
+        return None
+    if not _DIGITS.match(raw):
+        raise invalid("if_version must be an integer >= 0")
+    return int(raw)
+
+
 def _not_found(key: str) -> ApiError:
     return ApiError(404, "NOT_FOUND", f"{key} does not exist")
+
+
+def _conflict(key: str, err: VersionConflict) -> ApiError:
+    return ApiError(
+        409, "VERSION_CONFLICT", f"{key} is at version {err.current_version}", current_version=err.current_version
+    )
 
 
 def create_app(config: Optional[NodeConfig] = None) -> Flask:
@@ -76,8 +104,12 @@ def create_app(config: Optional[NodeConfig] = None) -> Flask:
     @app.put("/internal/data/<key>")
     def put_data(key: str):
         _checked_key(key)
-        value = _checked_value(json_body())
-        record = store.put(key, value)
+        body = json_body()
+        value = _checked_value(body)
+        try:
+            record = store.put(key, value, if_version=_body_version(body))
+        except VersionConflict as err:
+            raise _conflict(key, err) from None
         return {"key": record.key, "version": record.version, "updated_at": record.updated_at}
 
     @app.get("/internal/data/<key>")
@@ -92,11 +124,26 @@ def create_app(config: Optional[NodeConfig] = None) -> Flask:
     @app.delete("/internal/data/<key>")
     def delete_data(key: str):
         _checked_key(key)
+        if_version = _query_version()
         try:
-            record = store.delete(key)
+            record = store.delete(key, if_version=if_version)
         except NotFound:
             raise _not_found(key) from None
+        except VersionConflict as err:
+            raise _conflict(key, err) from None
         return {"key": record.key, "version": record.version, "deleted": True, "updated_at": record.updated_at}
+
+    @app.get("/internal/data")
+    def scan_data():
+        prefix = request.args.get("prefix")
+        if prefix not in SCAN_PREFIXES:
+            raise invalid(f"prefix must be one of {', '.join(SCAN_PREFIXES)}")
+        records = [record.envelope() for record in store.scan(prefix)]
+        return {"count": len(records), "records": records}
+
+    @app.get("/internal/stats")
+    def stats():
+        return {"node_id": config.node_id, "shard": config.shard, **store.stats()}
 
     log.info("storage node %s (shard %d) started, data in %s", config.node_id, config.shard, config.db_path)
     return app

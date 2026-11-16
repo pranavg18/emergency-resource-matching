@@ -175,3 +175,123 @@ def test_survives_a_hard_kill(node):
     node.kill()
     node.start()
     assert get(node, RESOURCE_KEY).json()["value"] == '{"availability":5}'
+
+
+# --- Conditional writes ------------------------------------------------------
+
+
+def test_if_version_zero_creates_only_once(node):
+    assert put(node, KEY, '{"n":1}', if_version=0).status_code == 200
+    response = put(node, KEY, '{"n":2}', if_version=0)
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "VERSION_CONFLICT"
+    assert error["current_version"] == 1
+    assert get(node, KEY).json()["value"] == '{"n":1}'
+
+
+def test_if_version_match_writes(node):
+    put(node, KEY, '{"n":1}')
+    response = put(node, KEY, '{"n":2}', if_version=1)
+    assert response.status_code == 200
+    assert response.json()["version"] == 2
+
+
+def test_if_version_mismatch_reports_current_version(node):
+    put(node, KEY, '{"n":1}')
+    put(node, KEY, '{"n":2}')
+    response = put(node, KEY, '{"n":3}', if_version=1)
+    assert response.status_code == 409
+    assert response.json()["error"]["current_version"] == 2
+
+
+def test_tombstone_version_counts_as_current(node):
+    put(node, KEY, '{"n":1}')
+    delete(node, KEY)
+    assert put(node, KEY, '{"n":2}', if_version=0).status_code == 409
+    assert put(node, KEY, '{"n":2}', if_version=2).json()["version"] == 3
+
+
+def test_null_if_version_is_unconditional(node):
+    put(node, KEY, '{"n":1}')
+    assert put(node, KEY, '{"n":2}', if_version=None).status_code == 200
+
+
+@pytest.mark.parametrize("bad", ["1", 1.5, -1, True])
+def test_bad_if_version_in_body_is_400(node, bad):
+    assert put(node, KEY, '{"n":1}', if_version=bad).status_code == 400
+
+
+def test_delete_with_if_version(node):
+    put(node, KEY, '{"n":1}')
+    put(node, KEY, '{"n":2}')
+    conflict = delete(node, KEY, if_version=1)
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["current_version"] == 2
+    assert delete(node, KEY, if_version=2).status_code == 200
+
+
+@pytest.mark.parametrize("bad", ["abc", "-1", "1.0", ""])
+def test_bad_if_version_in_query_is_400(node, bad):
+    put(node, KEY, '{"n":1}')
+    assert delete(node, KEY, if_version=bad).status_code == 400
+
+
+def test_concurrent_conditional_writes_have_one_winner(node):
+    from concurrent.futures import ThreadPoolExecutor
+
+    put(node, RESOURCE_KEY, '{"availability":1}')
+
+    def claim(i):
+        return put(node, RESOURCE_KEY, json.dumps({"availability": 0, "claimed_by": i}), if_version=1).status_code
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        statuses = list(pool.map(claim, range(32)))
+
+    assert statuses.count(200) == 1
+    assert statuses.count(409) == 31
+    assert get(node, RESOURCE_KEY).json()["version"] == 2
+
+
+# --- Scan and stats ----------------------------------------------------------
+
+
+def test_scan_returns_live_records_for_the_prefix(node):
+    put(node, KEY, '{"n":1}')
+    put(node, OTHER_KEY, '{"n":2}')
+    put(node, RESOURCE_KEY, '{"n":3}')
+    delete(node, OTHER_KEY)
+
+    response = requests.get(f"{node.url}/internal/data", params={"prefix": "request:"}, timeout=2)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 1
+    assert [record["key"] for record in body["records"]] == [KEY]
+    assert body["records"][0]["value"] == '{"n":1}'
+
+    resources = requests.get(f"{node.url}/internal/data", params={"prefix": "resource:"}, timeout=2).json()
+    assert [record["key"] for record in resources["records"]] == [RESOURCE_KEY]
+
+
+def test_scan_of_empty_store(node):
+    body = requests.get(f"{node.url}/internal/data", params={"prefix": "resource:"}, timeout=2).json()
+    assert body == {"count": 0, "records": []}
+
+
+@pytest.mark.parametrize("params", [{}, {"prefix": "order:"}, {"prefix": "req"}, {"prefix": ""}])
+def test_scan_needs_a_known_prefix(node, params):
+    assert requests.get(f"{node.url}/internal/data", params=params, timeout=2).status_code == 400
+
+
+def test_stats(start_storage_node):
+    node = start_storage_node(node_id="s2-b", shard=2)
+    assert requests.get(f"{node.url}/internal/stats", timeout=2).json() == {
+        "node_id": "s2-b", "shard": 2, "keys": 0, "tombstones": 0, "max_version": 0,
+    }
+    put(node, KEY, '{"n":1}')
+    put(node, KEY, '{"n":2}')
+    put(node, OTHER_KEY, '{"n":1}')
+    delete(node, OTHER_KEY)
+    assert requests.get(f"{node.url}/internal/stats", timeout=2).json() == {
+        "node_id": "s2-b", "shard": 2, "keys": 1, "tombstones": 1, "max_version": 2,
+    }
