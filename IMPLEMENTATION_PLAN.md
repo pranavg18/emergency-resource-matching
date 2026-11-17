@@ -251,7 +251,7 @@ Two rules that keep this fair and safe:
 
 ## 9. Phased roadmap
 
-The confirmed submission is **Thursday, 19 November 2026**, with implementation, peer reviews, and rehearsal to be complete by **Wednesday, 18 November**. The phase dates below are the original roadmap, not the current delivery schedule. Follow [the readiness checklist](docs/READINESS.md) for the remaining owners, dependencies, and acceptance gates. Every PR still requires the other person's review before merge.
+The project is due **Friday Nov 20**, so the phases run Nov 10–19, with Nov 20 kept for the final rehearsal, its fixes, and submission. That is ten days for about 40 small PRs — roughly two per person per day — so merge daily, and apply the cut list at the end of this section at its checkpoints. Phase 2 is the largest. If submission is due early on Nov 20, the rehearsal moves to the evening of Nov 19.
 
 `P` = Pranav, `A` = Aksha. Each row is one PR; the listed commits are the expected minimum. Every row has one driver; the other person reviews.
 
