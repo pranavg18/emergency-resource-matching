@@ -224,7 +224,12 @@
       },
       "environment": {
         "COORDINATOR_URL": "http://coordinator:8000",
-        "RABBITMQ_URL": "amqp://emergency:local-dev@rabbitmq:5672/"
+        "RABBITMQ_URL": "amqp://emergency:local-dev@rabbitmq:5672/",
+        "MAX_RADIUS_KM": "${MAX_RADIUS_KM:-50}",
+        "MAX_ATTEMPTS": "${MAX_ATTEMPTS:-5}",
+        "MATCH_DELAY_MS": "${MATCH_DELAY_MS:-0}",
+        "SWEEP_INTERVAL_S": "${SWEEP_INTERVAL_S:-30}",
+        "RETRY_DELAY_MS": "${RETRY_DELAY_MS:-5000}"
       },
       "healthcheck": {
         "test": [
@@ -245,7 +250,12 @@
       },
       "environment": {
         "COORDINATOR_URL": "http://coordinator:8000",
-        "RABBITMQ_URL": "amqp://emergency:local-dev@rabbitmq:5672/"
+        "RABBITMQ_URL": "amqp://emergency:local-dev@rabbitmq:5672/",
+        "MAX_RADIUS_KM": "${MAX_RADIUS_KM:-50}",
+        "MAX_ATTEMPTS": "${MAX_ATTEMPTS:-5}",
+        "MATCH_DELAY_MS": "${MATCH_DELAY_MS:-0}",
+        "SWEEP_INTERVAL_S": "${SWEEP_INTERVAL_S:-30}",
+        "RETRY_DELAY_MS": "${RETRY_DELAY_MS:-5000}"
       },
       "healthcheck": {
         "test": [
@@ -266,7 +276,12 @@
       },
       "environment": {
         "COORDINATOR_URL": "http://coordinator:8000",
-        "RABBITMQ_URL": "amqp://emergency:local-dev@rabbitmq:5672/"
+        "RABBITMQ_URL": "amqp://emergency:local-dev@rabbitmq:5672/",
+        "MAX_RADIUS_KM": "${MAX_RADIUS_KM:-50}",
+        "MAX_ATTEMPTS": "${MAX_ATTEMPTS:-5}",
+        "MATCH_DELAY_MS": "${MATCH_DELAY_MS:-0}",
+        "SWEEP_INTERVAL_S": "${SWEEP_INTERVAL_S:-30}",
+        "RETRY_DELAY_MS": "${RETRY_DELAY_MS:-5000}"
       },
       "healthcheck": {
         "test": [

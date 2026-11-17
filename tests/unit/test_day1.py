@@ -5,17 +5,20 @@ import logging
 import pytest
 
 from common.core import APIError, Conflict, app_base, new_record, transition
+from common.storage import FakeStorage
 
 
 @pytest.mark.parametrize("service", ["request", "resource", "matching"])
-def test_skeleton(service):
-    app = importlib.import_module(f"services.{service}_service.app").create_app()
+def test_service_health_and_configuration(service):
+    app = importlib.import_module(f"services.{service}_service.app").create_app(storage=FakeStorage())
     client = app.test_client()
     for path in ("/healthz", "/readyz"):
         response = client.get(path, headers={"X-Request-ID": "day1"})
         assert response.status_code == 200
         assert response.headers["X-Request-ID"] == "day1"
-    assert client.post("/requests", json={}).status_code == 404
+    assert app.config["SETTINGS"].max_attempts == 5
+    expected = 400 if service == "request" else 404
+    assert client.post("/requests", json={}).status_code == expected
 
 
 @pytest.mark.parametrize("location", [{"lat": True, "lon": 0}, {"lat": 91, "lon": 0},

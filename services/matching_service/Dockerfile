@@ -8,4 +8,4 @@ COPY services services
 RUN useradd --create-home --uid 10001 app
 USER app
 EXPOSE 8000
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "1", "--worker-class", "gthread", "--threads", "8", "services.matching_service.app:create_app()"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "1", "--worker-class", "gthread", "--threads", "8", "services.matching_service.app:create_app(start_background=True)"]
