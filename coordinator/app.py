@@ -9,9 +9,10 @@ from typing import Any, Optional
 import requests
 from flask import Flask
 
-from . import web
+from . import validation, web
 from .config import NODE_CALL_TIMEOUT_S, SHARD_COUNT, CoordinatorConfig
 from .registry import DOWN, NodeInfo, Registry, RegistryError, UnknownNode, describe
+from .router import Router
 from .web import ApiError, invalid, json_body
 
 log = logging.getLogger(__name__)
@@ -53,6 +54,7 @@ def create_app(config: Optional[CoordinatorConfig] = None) -> Flask:
 
     registry = Registry(SHARD_COUNT, on_needs_sync=_sync_requested)
     pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="node-call")
+    router = Router(registry, pool)
 
     app = Flask(__name__)
     web.install(app)
@@ -93,6 +95,28 @@ def create_app(config: Optional[CoordinatorConfig] = None) -> Flask:
         except UnknownNode:
             raise ApiError(404, "UNKNOWN_NODE", f"{node_id} is not registered; register again") from None
         return {"state": node.state, "role": node.role}
+
+    # --- Data API: the only storage interface the services see ----------
+
+    @app.put("/data/<key>")
+    def put_data(key: str):
+        validation.checked_key(key)
+        body = json_body()
+        value = validation.checked_value(body)
+        return router.put(key, value, validation.body_version(body))
+
+    @app.get("/data/<key>")
+    def get_data(key: str):
+        return router.get(validation.checked_key(key))
+
+    @app.delete("/data/<key>")
+    def delete_data(key: str):
+        validation.checked_key(key)
+        return router.delete(key, validation.query_version())
+
+    @app.get("/data")
+    def scan_data():
+        return router.scan(validation.scan_prefix(), validation.scan_filters())
 
     def _key_count(node: NodeInfo) -> Optional[int]:
         if node.state == DOWN:

@@ -151,6 +151,60 @@ def start_storage_node(tmp_path, servers):
     return _start
 
 
+class Cluster:
+    """A coordinator plus storage nodes keyed by node id (`s0-a`, `s0-b`, ...)."""
+
+    def __init__(self, coordinator: Server, nodes: dict[str, Server]):
+        self.coordinator = coordinator
+        self.nodes = nodes
+        self.url = coordinator.url
+
+    def view(self) -> dict:
+        return requests.get(f"{self.url}/cluster", timeout=10).json()
+
+    def node_view(self, node_id: str) -> Optional[dict]:
+        for shard in self.view()["shards"]:
+            for node in shard["nodes"]:
+                if node["node_id"] == node_id:
+                    return node
+        return None
+
+    def state_of(self, node_id: str) -> Optional[str]:
+        node = self.node_view(node_id)
+        return node["state"] if node else None
+
+
+@pytest.fixture
+def start_cluster(start_coordinator, start_storage_node):
+    """Start a coordinator and `replicas` nodes per shard; `a` nodes register first."""
+
+    def _start(
+        replicas: int = 1,
+        shards: tuple[int, ...] = (0, 1, 2),
+        heartbeat_interval_ms: int = 150,
+        heartbeat_timeout_ms: int = 1000,
+    ) -> Cluster:
+        from concurrent.futures import ThreadPoolExecutor
+
+        coordinator = start_coordinator(heartbeat_interval_ms, heartbeat_timeout_ms)
+        cluster = Cluster(coordinator, {})
+        for suffix in "ab"[:replicas]:
+            node_ids = [(f"s{shard}-{suffix}", shard) for shard in shards]
+            with ThreadPoolExecutor(max_workers=len(node_ids)) as pool:
+                started = pool.map(
+                    lambda item: start_storage_node(node_id=item[0], shard=item[1], coordinator_url=coordinator.url),
+                    node_ids,
+                )
+                cluster.nodes.update(zip((node_id for node_id, _ in node_ids), started))
+            for node_id, _ in node_ids:
+                assert wait_until(lambda: cluster.node_view(node_id) is not None, timeout=10), (
+                    f"{node_id} did not register:\n{cluster.nodes[node_id].logs()}"
+                )
+        return cluster
+
+    return _start
+
+
 @pytest.fixture
 def start_coordinator(tmp_path, servers):
     def _start(

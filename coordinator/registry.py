@@ -106,6 +106,13 @@ class Registry:
             self._on_needs_sync(node_id)
         return result
 
+    def primary(self, shard: int) -> Optional[NodeInfo]:
+        """The shard's primary if it is UP, else None."""
+        with self._lock:
+            info = self._shards[shard]
+            node = info.nodes.get(info.primary) if info.primary else None
+            return copy.copy(node) if node is not None and node.state == UP else None
+
     def snapshot(self) -> list[ShardInfo]:
         """A deep copy of every shard, safe to read without the lock."""
         with self._lock:
