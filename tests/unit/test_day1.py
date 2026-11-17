@@ -29,7 +29,7 @@ def test_reject_invalid_location(location):
 
 
 def test_models_and_transitions():
-    data = {"type": "water", "location": {"lat": 28, "lon": 77}}
+    data = {"type": "water", "details": "water needed", "location": {"lat": 28, "lon": 77}}
     assert new_record(data)["status"] == "PENDING"
     assert new_record({**data, "availability": 0}, resource=True)["status"] == "BUSY"
     with pytest.raises(APIError):

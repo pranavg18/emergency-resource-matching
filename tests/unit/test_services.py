@@ -13,7 +13,7 @@ LOCATION = {"lat": 28.61, "lon": 77.20}
 
 
 def seed(storage, resource=False, **fields):
-    data = {"type": "water", "location": LOCATION, "availability": 1, **fields}
+    data = {"type": "water", "details": "water needed", "location": LOCATION, "availability": 1, **fields}
     value = new_record(data, resource)
     storage.put(("resource:" if resource else "request:") + value["id"], value, 0)
     return value
@@ -25,9 +25,9 @@ def test_service_lifecycle_and_release():
     req = request_app(s, lambda *a: events.append(a)).test_client()
     res = resource_app(s).test_client()
     match = matching_app(s).test_client()
-    r = res.post("/resources", json={"type": "water", "location": LOCATION, "availability": 1})
+    r = res.post("/resources", json={"type": "water", "details": "water needed", "location": LOCATION, "availability": 1})
     assert r.status_code == 201
-    q = req.post("/requests", json={"type": "water", "location": LOCATION})
+    q = req.post("/requests", json={"type": "water", "details": "water needed", "location": LOCATION})
     assert q.status_code == 201 and q.json["queued"]
     rid = q.json["id"]
     assert match.post("/match/" + rid).json["matched"]
@@ -42,11 +42,11 @@ def test_service_lifecycle_and_release():
     assert resource["availability"] == 1 and resource["assigned_request_ids"] == {}
 
 
-@pytest.mark.parametrize("payload", [None, [], {}, {"type": "fire", "location": LOCATION},
+@pytest.mark.parametrize("payload", [None, [], {}, {"type": "fire", "details": "water needed", "location": LOCATION},
     {"type": "water", "location": {"lat": 91, "lon": 1}},
     {"type": "water", "location": {"lat": True, "lon": 1}},
     {"type": "water", "location": LOCATION, "details": []},
-    {"type": [], "location": LOCATION}])
+    {"type": [], "details": "water needed", "location": LOCATION}])
 def test_bad_requests(payload):
     c = request_app(FakeStorage(), lambda *a: None).test_client()
     assert c.post("/requests", json=payload).status_code == 400
@@ -58,7 +58,7 @@ def test_broker_down_and_sweeper():
     def failed(*args):
         raise OSError("broker down")
     c = request_app(s, failed).test_client()
-    r = c.post("/requests", json={"type": "water", "location": LOCATION})
+    r = c.post("/requests", json={"type": "water", "details": "water needed", "location": LOCATION})
     assert r.status_code == 201 and not r.json["queued"]
     messages = []
     Matcher(s).sweep(lambda *a: messages.append(a), age=0)
@@ -211,7 +211,7 @@ def test_queued_flag_does_not_overwrite_fast_matcher():
     def immediate_consumer(event, message):
         Matcher(s).match(message["request_id"])
     c = request_app(s, immediate_consumer).test_client()
-    response = c.post("/requests", json={"type": "water", "location": LOCATION})
+    response = c.post("/requests", json={"type": "water", "details": "water needed", "location": LOCATION})
     assert response.status_code == 201
     actual = s.get("request:" + response.json["id"])["value"]
     assert actual["status"] == "MATCHED" and actual["assigned_resource_id"]

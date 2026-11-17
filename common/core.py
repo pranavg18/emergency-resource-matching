@@ -44,7 +44,7 @@ class Unavailable(APIError):
 
 
 def now():
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def shard_for(key):
@@ -71,7 +71,7 @@ def validate_location(loc):
         x = loc.get(field)
         if type(x) not in (int, float) or not math.isfinite(x) or abs(x) > limit:
             raise APIError(f"location.{field} must be between {-limit} and {limit}")
-    if not isinstance(loc.get("label", ""), str):
+    if not isinstance(loc.get("label", ""), str) or len(loc.get("label", "")) > 200:
         raise APIError("location.label must be a string")
     return {"lat": loc["lat"], "lon": loc["lon"], "label": loc.get("label", "")}
 
@@ -79,16 +79,17 @@ def validate_location(loc):
 def new_record(data, resource=False):
     if not isinstance(data.get("type"), str) or data["type"] not in TYPES:
         raise APIError(f"type must be one of {sorted(TYPES)}")
+    timestamp = now()
     value = {"id": str(uuid.uuid4()), "type": data["type"],
              "location": validate_location(data.get("location")),
-             "created_at": now(), "updated_at": now()}
+             "created_at": timestamp, "updated_at": timestamp}
     if resource:
         n = integer(data.get("availability"), "availability")
         value.update(availability=n, status="AVAILABLE" if n else "BUSY",
                      assigned_request_ids={})
     else:
-        if not isinstance(data.get("details", ""), str):
-            raise APIError("details must be a string")
+        if not isinstance(data.get("details"), str) or not 1 <= len(data["details"]) <= 2000:
+            raise APIError("details must contain 1 to 2000 characters")
         value.update(details=data.get("details", ""), status="PENDING", queued=False,
                      candidate_resource_id=None, assigned_resource_id=None, match_attempt=0)
     return value

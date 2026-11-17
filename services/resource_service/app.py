@@ -1,7 +1,7 @@
 from common.config import Settings
 from flask import request
 
-from common.core import APIError, Conflict, Unavailable, app_base, body, integer, new_record, now
+from common.core import TYPES, APIError, Conflict, Unavailable, app_base, body, integer, new_record, now
 from common.storage import StorageClient
 
 
@@ -18,9 +18,14 @@ def create_app(storage=None):
 
     @app.get("/resources")
     def resources():
-        values = [r["value"] for r in storage.scan("resource:", request.args.get("type"))]
-        status = request.args.get("status")
-        return {"resources": [v for v in values if not status or v["status"] == status]}
+        kind, status = request.args.get("type"), request.args.get("status")
+        if kind is not None and kind not in TYPES:
+            raise APIError("invalid resource type")
+        if status is not None and status not in {"AVAILABLE", "BUSY", "OFFLINE"}:
+            raise APIError("invalid resource status")
+        values = [r["value"] for r in storage.scan("resource:", kind)]
+        values = [v for v in values if status is None or v["status"] == status]
+        return {"count": len(values), "resources": values}
 
     @app.put("/resources/<resource_id>/status")
     def status(resource_id):
