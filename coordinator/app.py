@@ -11,6 +11,7 @@ from flask import Flask
 
 from . import validation, web
 from .config import NODE_CALL_TIMEOUT_S, SHARD_COUNT, CoordinatorConfig
+from .monitor import FailureDetector
 from .registry import DOWN, NodeInfo, Registry, RegistryError, UnknownNode, describe
 from .router import Router
 from .web import ApiError, invalid, json_body
@@ -55,6 +56,9 @@ def create_app(config: Optional[CoordinatorConfig] = None) -> Flask:
     registry = Registry(SHARD_COUNT, on_needs_sync=_sync_requested)
     pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="node-call")
     router = Router(registry, pool)
+    # gunicorn calls create_app() inside its single worker, so the detector
+    # runs in the process that owns the registry.
+    FailureDetector(registry, router, config.heartbeat_interval_ms, config.heartbeat_timeout_ms).start()
 
     app = Flask(__name__)
     web.install(app)

@@ -106,13 +106,16 @@ class Router:
                 self._replica_failed(shard, replica, exc)
 
     def _replica_failed(self, shard: int, replica: NodeInfo, exc: Exception) -> None:
-        log.warning("replica %s missed a write: %s", replica.node_id, exc)
+        # The write stands on the primary. The replica now lacks it, so it
+        # goes DOWN at once and must sync before it can serve reads again.
+        self._registry.mark_down(replica.node_id, f"replica write failed: {exc}")
 
     def _on_primary(self, shard: int, primary: NodeInfo, method: str, path: str, **kwargs) -> NodeReply:
         try:
             reply = nodes.call(method, primary.url, path, **kwargs)
         except NodeUnreachable as exc:
-            log.warning("primary %s failed: %s", primary.node_id, exc)
+            # Caller holds the shard lock, so the role change cannot race a write.
+            self._registry.mark_down(primary.node_id, f"primary call failed: {exc}")
             raise _unavailable(shard, f"primary {primary.node_id} did not answer") from None
         if reply.status != 200:
             raise _relay(reply)
@@ -121,8 +124,11 @@ class Router:
     # --- reads -----------------------------------------------------------
 
     def _readable(self, shard: int) -> list[NodeInfo]:
-        primary = self._registry.primary(shard)
-        return [primary] if primary is not None else []
+        return self._registry.readable(shard)
+
+    def _read_failed(self, shard: int, node: NodeInfo, exc: Exception) -> None:
+        with self._locks[shard]:
+            self._registry.mark_down(node.node_id, f"read failed: {exc}")
 
     def get(self, key: str) -> dict:
         shard = self.shard_of(key)
@@ -130,7 +136,7 @@ class Router:
             try:
                 reply = nodes.call("GET", node.url, f"/internal/data/{key}")
             except NodeUnreachable as exc:
-                log.warning("read from %s failed: %s", node.node_id, exc)
+                self._read_failed(shard, node, exc)
                 continue
             if reply.status == 200:
                 return reply.body
@@ -142,7 +148,7 @@ class Router:
             try:
                 reply = nodes.call("GET", node.url, "/internal/data", params={"prefix": prefix})
             except NodeUnreachable as exc:
-                log.warning("scan of %s failed: %s", node.node_id, exc)
+                self._read_failed(shard, node, exc)
                 continue
             if reply.status == 200 and isinstance(reply.body.get("records"), list):
                 return reply.body["records"]

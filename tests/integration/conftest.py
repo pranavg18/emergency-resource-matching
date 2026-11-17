@@ -107,6 +107,13 @@ class Server:
     def kill(self) -> None:
         self.stop(signal.SIGKILL)
 
+    def pause(self) -> None:
+        """Freeze the process without killing it: it stops answering and heartbeating."""
+        os.killpg(self.proc.pid, signal.SIGSTOP)
+
+    def resume(self) -> None:
+        os.killpg(self.proc.pid, signal.SIGCONT)
+
     def restart(self) -> "Server":
         self.stop()
         return self.start()
