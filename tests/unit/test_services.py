@@ -5,7 +5,7 @@ import pytest
 from common.core import Conflict, new_record
 from common.storage import FakeStorage
 from services.matching_service.app import create_app as matching_app
-from services.matching_service.engine import Matcher, distance
+from services.matching_service.engine import ClaimResult, Matcher, distance
 from services.request_service.app import create_app as request_app
 from services.resource_service.app import create_app as resource_app
 
@@ -108,7 +108,7 @@ def test_attempt_fences_takeover_and_release():
     m = Matcher(s)
     assert m.claim(r["id"], q["id"], 1)
     assert m.claim(r["id"], q["id"], 3)
-    assert not m.claim(r["id"], q["id"], 1)
+    assert m.claim(r["id"], q["id"], 1) is ClaimResult.STALE
     m.release(r["id"], q["id"], 1)
     v = s.get("resource:" + r["id"])["value"]
     assert v["availability"] == 0 and v["assigned_request_ids"][q["id"]] == 3
@@ -259,3 +259,30 @@ def test_broker_outage_does_not_block_claim_reconciliation():
         raise OSError("broker down")
     m.sweep(failed, age=0)
     assert s.get("resource:" + r["id"])["value"]["availability"] == 1
+
+
+def test_stale_worker_resumes_newer_claim_on_only_resource():
+    storage = FakeStorage()
+    resource, request = seed(storage, True), seed(storage)
+    record = storage.get("request:" + request["id"])
+    record["value"].update(candidate_resource_id=resource["id"], match_attempt=1)
+    storage.put(record["key"], record["value"], record["version"])
+    old = Matcher(storage)
+    original = old.claim
+    paused = False
+
+    def newer_claim(resource_id, request_id, attempt):
+        nonlocal paused
+        if not paused:
+            paused = True
+            record = storage.get("request:" + request_id)
+            record["value"]["match_attempt"] = 3
+            storage.put(record["key"], record["value"], record["version"])
+            assert Matcher(storage).claim(resource_id, request_id, 3) is ClaimResult.CLAIMED
+        return original(resource_id, request_id, attempt)
+
+    old.claim = newer_claim
+    result = old.match(request["id"])
+    assert result["matched"] and result["resource"]["id"] == resource["id"]
+    assert result["resource"]["availability"] == 0
+    assert result["resource"]["assigned_request_ids"] == {request["id"]: 3}

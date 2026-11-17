@@ -1,8 +1,15 @@
 import math
+from enum import Enum
 from datetime import datetime, timezone
 
 from common.config import Settings
 from common.core import APIError, CLOSED, OPEN, Conflict, Unavailable, log, now
+
+
+class ClaimResult(Enum):
+    CLAIMED = "claimed"
+    UNAVAILABLE = "unavailable"
+    STALE = "stale"
 
 
 def distance(a, b):
@@ -49,12 +56,12 @@ class Matcher:
             value = record["value"]
             held = value["assigned_request_ids"].get(request_id)
             if held == attempt:
-                return True
+                return ClaimResult.CLAIMED
             if held is not None and held > attempt:
-                return False
+                return ClaimResult.STALE
             if held is None:
                 if value["status"] != "AVAILABLE" or value["availability"] <= 0:
-                    return False
+                    return ClaimResult.UNAVAILABLE
                 value["availability"] -= 1
             value["assigned_request_ids"][request_id] = attempt
             if value["status"] != "OFFLINE":
@@ -62,7 +69,7 @@ class Matcher:
             value["updated_at"] = now()
             try:
                 self.storage.put(record["key"], value, record["version"])
-                return True
+                return ClaimResult.CLAIMED
             except Conflict:
                 continue
         raise Unavailable("claim contention")
@@ -90,7 +97,10 @@ class Matcher:
                 except Conflict:
                     continue
             attempt = value["match_attempt"]
-            if not self.claim(candidate, request_id, attempt):
+            outcome = self.claim(candidate, request_id, attempt)
+            if outcome is ClaimResult.STALE:
+                continue
+            if outcome is ClaimResult.UNAVAILABLE:
                 excluded.add(candidate)
                 continue
             # A paused worker can only finalize the exact candidate AND attempt it owns.
