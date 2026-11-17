@@ -64,6 +64,9 @@ class Worker:
                         conn.close()
                         return
                     except APIError as exc:
+                        if exc.status >= 500 and self.stop.wait(2):
+                            conn.close()
+                            return
                         channel.basic_nack(method.delivery_tag, requeue=exc.status >= 500)
                     except Exception as exc:
                         log("dead_letter", error=type(exc).__name__)

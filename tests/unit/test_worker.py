@@ -30,3 +30,47 @@ def test_exhaustion_and_poison(monkeypatch):
     for message in ([], {}, {"request_id": "r", "attempt": -1}):
         with pytest.raises(ValueError):
             Worker(matcher).handle(message)
+
+
+@pytest.mark.parametrize("shutdown", [False, True])
+def test_release_failure_delays_requeue_and_honors_shutdown(monkeypatch, shutdown):
+    from types import SimpleNamespace
+    import json
+    matcher = Mock()
+    matcher.release.side_effect = Unavailable()
+    worker = Worker(matcher)
+    conn, channel = Mock(), Mock()
+    conn.is_open = True
+    conn.channel.return_value = channel
+    callbacks = {}
+    channel.basic_consume.side_effect = lambda queue, callback: callbacks.update({queue: callback})
+    order = []
+
+    def wait(seconds):
+        if seconds == 2:
+            order.append("wait")
+            return shutdown
+        return False
+
+    worker.stop.wait = Mock(side_effect=wait)
+    channel.basic_nack.side_effect = lambda *a, **k: order.append("nack")
+    def deliver(**kwargs):
+        callbacks["match.released"](channel,
+            SimpleNamespace(routing_key="request.closed", delivery_tag=7, redelivered=False),
+            SimpleNamespace(correlation_id="trace"),
+            json.dumps({"request_id": "r", "resource_id": "s", "attempt": 1}).encode())
+        worker.stop.set()
+    conn.process_data_events.side_effect = deliver
+    monkeypatch.setattr("services.matching_service.worker.connection", lambda: conn)
+    monkeypatch.setattr("services.matching_service.worker.topology", lambda channel: None)
+    publish = Mock()
+    monkeypatch.setattr("services.matching_service.worker.publish", publish)
+    worker.consume()
+    if shutdown:
+        channel.basic_nack.assert_not_called()
+        conn.close.assert_called()
+    else:
+        assert order[:2] == ["wait", "nack"]
+        channel.basic_nack.assert_called_once_with(7, requeue=True)
+    publish.assert_not_called()
+    channel.basic_ack.assert_not_called()
