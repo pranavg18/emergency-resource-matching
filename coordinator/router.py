@@ -76,7 +76,9 @@ class Router:
         with self._locks[shard]:
             primary = self._primary_or_503(shard)
             reply = self._on_primary(shard, primary, "PUT", f"/internal/data/{key}", json=body)
-            return {"key": key, "version": reply.body["version"], "updated_at": reply.body["updated_at"]}
+            version, updated_at = reply.body["version"], reply.body["updated_at"]
+            self._replicate(shard, key, {"value": value, "version": version, "deleted": False, "updated_at": updated_at})
+            return {"key": key, "version": version, "updated_at": updated_at}
 
     def delete(self, key: str, if_version: Optional[int]) -> dict:
         shard = self.shard_of(key)
@@ -84,12 +86,27 @@ class Router:
         with self._locks[shard]:
             primary = self._primary_or_503(shard)
             reply = self._on_primary(shard, primary, "DELETE", f"/internal/data/{key}", params=params)
-            return {
-                "key": key,
-                "version": reply.body["version"],
-                "deleted": True,
-                "updated_at": reply.body["updated_at"],
-            }
+            version, updated_at = reply.body["version"], reply.body["updated_at"]
+            self._replicate(shard, key, {"value": "", "version": version, "deleted": True, "updated_at": updated_at})
+            return {"key": key, "version": version, "deleted": True, "updated_at": updated_at}
+
+    def _replicate(self, shard: int, key: str, row: dict) -> None:
+        """Copy the primary's row to every other live node, still under the shard lock.
+
+        Synchronous, so an acknowledged write is on every replica that is up.
+        Holding the lock means two writes to one key reach a replica in the
+        same order they reached the primary.
+        """
+        for replica in self._registry.replicas(shard):
+            try:
+                reply = nodes.call("PUT", replica.url, f"/internal/replica/{key}", json=row)
+                if reply.status != 200:
+                    raise NodeUnreachable(f"replica write answered {reply.status}: {reply.body}")
+            except NodeUnreachable as exc:
+                self._replica_failed(shard, replica, exc)
+
+    def _replica_failed(self, shard: int, replica: NodeInfo, exc: Exception) -> None:
+        log.warning("replica %s missed a write: %s", replica.node_id, exc)
 
     def _on_primary(self, shard: int, primary: NodeInfo, method: str, path: str, **kwargs) -> NodeReply:
         try:

@@ -113,6 +113,20 @@ class Registry:
             node = info.nodes.get(info.primary) if info.primary else None
             return copy.copy(node) if node is not None and node.state == UP else None
 
+    def replicas(self, shard: int) -> list[NodeInfo]:
+        """Nodes that must receive every write besides the primary.
+
+        UP replicas, and SYNCING ones too: a node catching up must not miss
+        writes that arrive during its sync. DOWN nodes are skipped.
+        """
+        with self._lock:
+            info = self._shards[shard]
+            return [
+                copy.copy(node)
+                for node_id, node in sorted(info.nodes.items())
+                if node_id != info.primary and node.state in (UP, SYNCING)
+            ]
+
     def snapshot(self) -> list[ShardInfo]:
         """A deep copy of every shard, safe to read without the lock."""
         with self._lock:
