@@ -38,10 +38,12 @@ def create_app(storage=None, publisher=None):
     @app.put("/requests/<request_id>/status")
     def status(request_id):
         target = body().get("status")
-        for _ in range(30):
+        for _ in range(5):
             record = storage.get("request:" + request_id)
             value = record["value"]
             transition(value["status"], target, client=True)
+            if value["status"] == target:
+                return value
             value.update(status=target, updated_at=now())
             try:
                 storage.put(record["key"], value, record["version"])

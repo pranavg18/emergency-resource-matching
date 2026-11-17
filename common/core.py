@@ -25,14 +25,17 @@ TRANSITIONS = {
 
 
 class APIError(Exception):
-    def __init__(self, message, status=400):
+    def __init__(self, message, status=400, code=None):
         super().__init__(message)
         self.status = status
+        self.code = code or {400: "INVALID_REQUEST", 404: "NOT_FOUND", 405: "METHOD_NOT_ALLOWED",
+                             413: "INVALID_REQUEST", 500: "INTERNAL",
+                             503: "STORAGE_UNAVAILABLE"}.get(status, "INTERNAL")
 
 
 class Conflict(APIError):
-    def __init__(self, message="version conflict"):
-        super().__init__(message, 409)
+    def __init__(self, message="version conflict", code="VERSION_CONFLICT"):
+        super().__init__(message, 409, code)
 
 
 class Unavailable(APIError):
@@ -92,10 +95,12 @@ def new_record(data, resource=False):
 
 
 def transition(current, target, client=False):
-    if not isinstance(target, str) or target not in TRANSITIONS or (client and target in {"MATCHED", "UNMATCHED"}):
+    if not isinstance(target, str) or target not in TRANSITIONS:
         raise APIError("status cannot be set by this operation")
-    if current != target and target not in TRANSITIONS[current]:
-        raise Conflict(f"illegal transition: {current} -> {target}")
+    if current == target:
+        return
+    if (client and target in {"PENDING", "MATCHED", "UNMATCHED"}) or target not in TRANSITIONS[current]:
+        raise Conflict(f"illegal transition: {current} -> {target}", "ILLEGAL_TRANSITION")
 
 
 def log(event, **fields):
@@ -124,15 +129,23 @@ def app_base(name, readiness=None):
 
     @app.errorhandler(APIError)
     def api_error(exc):
-        return jsonify(error=str(exc)), exc.status
+        if exc.code == "VERSION_CONFLICT":
+            exc = Unavailable("storage write conflict; retry")
+        return jsonify(error={"code": exc.code, "message": str(exc)}), exc.status
 
     @app.errorhandler(HTTPException)
     def http_error(exc):
-        return jsonify(error=exc.description), exc.code
+        error = APIError(exc.description, exc.code)
+        return jsonify(error={"code": error.code, "message": str(error)}), exc.code
+
+    @app.errorhandler(Exception)
+    def unexpected_error(exc):
+        app.logger.exception("Unhandled service exception")
+        return jsonify(error={"code": "INTERNAL", "message": "internal server error"}), 500
 
     @app.get("/healthz")
     def health():
-        return {"status": "ok", "service": name}
+        return {"status": "ok"}
 
     @app.get("/readyz")
     def ready():

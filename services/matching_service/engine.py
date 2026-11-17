@@ -33,7 +33,7 @@ class Matcher:
                                      -r["availability"], r["created_at"], r["id"]))
 
     def release(self, resource_id, request_id, attempt):
-        for _ in range(50):
+        for _ in range(5):
             record = self.storage.get("resource:" + resource_id)
             value = record["value"]
             if value["assigned_request_ids"].get(request_id) != attempt:
@@ -51,7 +51,7 @@ class Matcher:
         raise Unavailable("release contention")
 
     def claim(self, resource_id, request_id, attempt):
-        for _ in range(50):
+        for _ in range(5):
             record = self.storage.get("resource:" + resource_id)
             value = record["value"]
             held = value["assigned_request_ids"].get(request_id)
@@ -77,11 +77,11 @@ class Matcher:
     def match(self, request_id):
         excluded = set()
         key = "request:" + request_id
-        for _ in range(100):
+        for _ in range(5):
             record = self.storage.get(key)
             value = record["value"]
             if value["status"] in CLOSED:
-                raise Conflict("request is closed")
+                raise Conflict("request is closed", "REQUEST_CLOSED")
             if value["status"] not in OPEN:
                 return self.result(value)
             candidate = value["candidate_resource_id"]
@@ -104,7 +104,7 @@ class Matcher:
                 excluded.add(candidate)
                 continue
             # A paused worker can only finalize the exact candidate AND attempt it owns.
-            for _ in range(50):
+            for _ in range(5):
                 fresh = self.storage.get(key)
                 current = fresh["value"]
                 if current["status"] not in OPEN:
@@ -130,7 +130,7 @@ class Matcher:
                 "resource": self.storage.get("resource:" + value["assigned_resource_id"])["value"]}
 
     def mark_unmatched(self, request_id):
-        for _ in range(30):
+        for _ in range(5):
             record = self.storage.get("request:" + request_id)
             value = record["value"]
             if value["status"] != "PENDING":

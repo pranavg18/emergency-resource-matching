@@ -32,14 +32,14 @@ def create_app(storage=None):
         if "status" in payload and (not isinstance(payload["status"], str)
                                     or payload["status"] not in {"AVAILABLE", "BUSY", "OFFLINE"}):
             raise APIError("invalid resource status")
-        for _ in range(30):
+        for _ in range(5):
             record = storage.get("resource:" + resource_id)
             value = record["value"]
             value.update({k: payload[k] for k in ("availability", "status") if k in payload})
             if payload.get("status") == "AVAILABLE" and value["availability"] == 0:
-                raise Conflict("AVAILABLE requires positive availability")
-            if payload.get("status") == "BUSY" and value["availability"] > 0:
-                raise Conflict("BUSY requires zero availability")
+                raise Conflict("AVAILABLE requires positive availability", "ILLEGAL_TRANSITION")
+            if payload.get("status") == "BUSY":
+                raise Conflict("BUSY cannot be set by a client", "ILLEGAL_TRANSITION")
             if value["status"] != "OFFLINE":
                 value["status"] = "AVAILABLE" if value["availability"] else "BUSY"
             value["updated_at"] = now()
