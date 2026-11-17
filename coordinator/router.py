@@ -143,10 +143,12 @@ class Router:
             raise _relay(reply)
         raise _unavailable(shard, "no readable node is up")
 
-    def _scan_shard(self, shard: int, prefix: str) -> list[dict]:
+    def _scan_shard(self, shard: int, prefix: str, request_id: Optional[str]) -> list[dict]:
         for node in self._readable(shard):
             try:
-                reply = nodes.call("GET", node.url, "/internal/data", params={"prefix": prefix})
+                reply = nodes.call(
+                    "GET", node.url, "/internal/data", params={"prefix": prefix}, request_id=request_id
+                )
             except NodeUnreachable as exc:
                 self._read_failed(shard, node, exc)
                 continue
@@ -156,7 +158,9 @@ class Router:
 
     def scan(self, prefix: str, filters: dict[str, str]) -> dict:
         shards = range(self._registry.shard_count)
-        results = list(self._pool.map(lambda shard: self._scan_shard(shard, prefix), shards))
+        # Read the id here: pool threads have no request context of their own.
+        request_id = nodes.current_request_id()
+        results = list(self._pool.map(lambda shard: self._scan_shard(shard, prefix, request_id), shards))
         records = [
             record
             for shard_records in results

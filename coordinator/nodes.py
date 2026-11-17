@@ -32,6 +32,17 @@ class NodeReply:
 _local = threading.local()
 
 
+def current_request_id() -> Optional[str]:
+    """The incoming request's id, if called while handling a request.
+
+    Worker-pool threads (scatter-gather) have no request context, so callers
+    that fan out must read this first and pass it to `call` explicitly.
+    """
+    if has_request_context():
+        return g.get("request_id")
+    return None
+
+
 def _session() -> requests.Session:
     # One session (and connection pool) per thread: Session is not
     # guaranteed to be thread-safe.
@@ -49,10 +60,10 @@ def call(
     json: Optional[dict] = None,
     params: Optional[dict] = None,
     timeout: float = NODE_CALL_TIMEOUT_S,
+    request_id: Optional[str] = None,
 ) -> NodeReply:
-    headers = {}
-    if has_request_context() and g.get("request_id"):
-        headers[REQUEST_ID_HEADER] = g.request_id
+    request_id = request_id or current_request_id()
+    headers = {REQUEST_ID_HEADER: request_id} if request_id else {}
     try:
         response = _session().request(
             method, f"{base_url}{path}", json=json, params=params, headers=headers, timeout=timeout

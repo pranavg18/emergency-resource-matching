@@ -6,11 +6,10 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
-import requests
 from flask import Flask
 
-from . import validation, web
-from .config import NODE_CALL_TIMEOUT_S, SHARD_COUNT, CoordinatorConfig
+from . import nodes, validation, web
+from .config import SHARD_COUNT, CoordinatorConfig
 from .monitor import FailureDetector
 from .registry import DOWN, NodeInfo, Registry, RegistryError, UnknownNode, describe
 from .router import Router
@@ -122,20 +121,24 @@ def create_app(config: Optional[CoordinatorConfig] = None) -> Flask:
     def scan_data():
         return router.scan(validation.scan_prefix(), validation.scan_filters())
 
-    def _key_count(node: NodeInfo) -> Optional[int]:
+    def _key_count(node: NodeInfo, request_id: Optional[str]) -> Optional[int]:
         if node.state == DOWN:
             return None
         try:
-            response = requests.get(f"{node.url}/internal/stats", timeout=NODE_CALL_TIMEOUT_S)
-            return response.json()["keys"] if response.status_code == 200 else None
-        except (requests.RequestException, ValueError, KeyError):
+            reply = nodes.call("GET", node.url, "/internal/stats", request_id=request_id)
+            return reply.body.get("keys") if reply.status == 200 else None
+        except nodes.NodeUnreachable:
             return None
 
     @app.get("/cluster")
     def cluster():
         shards = registry.snapshot()
-        nodes = [node for info in shards for node in info.nodes.values()]
-        counts = dict(zip((node.node_id for node in nodes), pool.map(_key_count, nodes)))
+        node_list = [node for info in shards for node in info.nodes.values()]
+        request_id = nodes.current_request_id()  # pool threads have no request context
+        counts = dict(zip(
+            (node.node_id for node in node_list),
+            pool.map(lambda node: _key_count(node, request_id), node_list),
+        ))
         return {
             "shards": [
                 {

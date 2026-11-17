@@ -164,3 +164,31 @@ def test_bad_writes_are_rejected_before_routing(start_coordinator, key, body):
     response = requests.put(f"{coordinator.url}/data/{key}", json=body, timeout=5)
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "INVALID_REQUEST"
+
+
+def test_request_id_reaches_the_nodes_on_writes_reads_and_scans(cluster):
+    """Scans fan out on pool threads, which have no request context of their
+    own; the id must still reach every shard so a request can be traced."""
+    from tests.integration.conftest import wait_until
+
+    def logged_on(node, request_id):
+        return request_id in node.log_path.read_text(errors="replace")
+
+    trace = {"X-Request-ID": "trace-write-0001"}
+    requests.put(f"{cluster.url}/data/{KEY}", json={"value": "{}"}, headers=trace, timeout=5)
+    requests.get(f"{cluster.url}/data/{KEY}", headers={"X-Request-ID": "trace-read-0001"}, timeout=5)
+    owner = cluster.nodes["s1-a"]  # KEY lives on shard 1
+    assert wait_until(lambda: logged_on(owner, "trace-write-0001"), timeout=5)
+    assert wait_until(lambda: logged_on(owner, "trace-read-0001"), timeout=5)
+
+    response = requests.get(
+        f"{cluster.url}/data", params={"prefix": "request:"}, headers={"X-Request-ID": "trace-scan-0001"}, timeout=10
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Request-ID"] == "trace-scan-0001"
+    for node_id, node in cluster.nodes.items():
+        assert wait_until(lambda: logged_on(node, "trace-scan-0001"), timeout=5), node_id
+
+    requests.get(f"{cluster.url}/cluster", headers={"X-Request-ID": "trace-cluster-0001"}, timeout=10)
+    for node_id, node in cluster.nodes.items():
+        assert wait_until(lambda: logged_on(node, "trace-cluster-0001"), timeout=5), node_id
