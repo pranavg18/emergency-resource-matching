@@ -1,0 +1,10 @@
+# Settings shared by the storage layer. Application services add their own.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: storage-config
+data:
+  COORDINATOR_URL: "http://coordinator:8000"
+  HEARTBEAT_INTERVAL_MS: "2000"
+  HEARTBEAT_TIMEOUT_MS: "6000"
+  LOG_LEVEL: "INFO"
