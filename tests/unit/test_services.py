@@ -9,6 +9,11 @@ from services.matching_service.engine import ClaimResult, Matcher, distance
 from services.request_service.app import create_app as request_app
 from services.resource_service.app import create_app as resource_app
 
+def assert_error(response, status, code):
+    assert response.status_code == status
+    assert response.json["error"]["code"] == code
+
+
 LOCATION = {"lat": 28.61, "lon": 77.20}
 
 
@@ -32,10 +37,10 @@ def test_service_lifecycle_and_release():
     rid = q.json["id"]
     assert match.post("/match/" + rid).json["matched"]
     assert match.post("/match/" + rid).json["matched"]
-    assert req.put(f"/requests/{rid}/status", json={"status": "COMPLETED"}).status_code == 409
+    assert_error(req.put(f"/requests/{rid}/status", json={"status": "COMPLETED"}), 409, "ILLEGAL_TRANSITION")
     assert req.put(f"/requests/{rid}/status", json={"status": "IN_PROGRESS"}).status_code == 200
     assert req.put(f"/requests/{rid}/status", json={"status": "COMPLETED"}).status_code == 200
-    assert match.post("/match/" + rid).status_code == 409
+    assert_error(match.post("/match/" + rid), 409, "REQUEST_CLOSED")
     Matcher(s).sweep(lambda *a: None)
     Matcher(s).sweep(lambda *a: None)
     resource = s.get("resource:" + r.json["id"])["value"]
@@ -49,7 +54,7 @@ def test_service_lifecycle_and_release():
     {"type": [], "details": "water needed", "location": LOCATION}])
 def test_bad_requests(payload):
     c = request_app(FakeStorage(), lambda *a: None).test_client()
-    assert c.post("/requests", json=payload).status_code == 400
+    assert_error(c.post("/requests", json=payload), 400, "INVALID_REQUEST")
 
 
 def test_broker_down_and_sweeper():
@@ -141,8 +146,8 @@ def test_resource_status_and_offline_release():
     m.match(q["id"])
     c = resource_app(s).test_client()
     path = f"/resources/{r['id']}/status"
-    assert c.put(path, json={"status": "AVAILABLE"}).status_code == 409
-    assert c.put(path, json={"availability": -1}).status_code == 400
+    assert_error(c.put(path, json={"status": "AVAILABLE"}), 409, "ILLEGAL_TRANSITION")
+    assert_error(c.put(path, json={"availability": -1}), 400, "INVALID_REQUEST")
     assert c.put(path, json={"status": "OFFLINE"}).status_code == 200
     m.release(r["id"], q["id"], 1)
     v = s.get("resource:" + r["id"])["value"]
@@ -242,8 +247,8 @@ def test_status_payloads_with_wrong_types_are_validation_errors():
     r, q = seed(s, True), seed(s)
     rc = resource_app(s).test_client()
     qc = request_app(s, lambda *a: None).test_client()
-    assert rc.put(f"/resources/{r['id']}/status", json={"status": []}).status_code == 400
-    assert qc.put(f"/requests/{q['id']}/status", json={"status": {}}).status_code == 400
+    assert_error(rc.put(f"/resources/{r['id']}/status", json={"status": []}), 400, "INVALID_REQUEST")
+    assert_error(qc.put(f"/requests/{q['id']}/status", json={"status": {}}), 400, "INVALID_REQUEST")
 
 
 def test_broker_outage_does_not_block_claim_reconciliation():

@@ -96,3 +96,24 @@ def test_cli_non_json_response(monkeypatch, capsys):
         main()
     assert error.value.code == 1
     assert capsys.readouterr().out.strip() == "HTTP 502: " + response.text[:200]
+
+
+def test_match_finalization_stops_after_five_conflicts():
+    from services.matching_service.app import create_app as matching_app
+    from services.resource_service.app import create_app as resource_app
+    storage = FakeStorage()
+    payload = {"type": "water", "location": {"lat": 0, "lon": 0}, "details": "water", "availability": 1}
+    resource_app(storage).test_client().post("/resources", json=payload)
+    created = create_app(storage, lambda *a: None).test_client().post("/requests", json=payload).json
+    original = storage.put
+    failures = []
+    def put(key, value, version):
+        if key.startswith("request:") and value["status"] == "MATCHED":
+            failures.append(key)
+            raise Conflict()
+        return original(key, value, version)
+    storage.put = put
+    reply = matching_app(storage).test_client().post("/match/" + created["id"])
+    assert reply.status_code == 503
+    assert reply.json["error"]["code"] == "STORAGE_UNAVAILABLE"
+    assert len(failures) == 5

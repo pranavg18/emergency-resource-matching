@@ -123,6 +123,8 @@ class Matcher:
                     return self.result(current)
                 except Conflict:
                     continue
+            else:
+                raise Unavailable("matching contention; retry")
         raise Unavailable("matching contention; retry")
 
     def result(self, value):
