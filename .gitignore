@@ -32,7 +32,5 @@ data/
 
 # Planning leftovers that do not belong in the repo
 plan_feedback/
-AKSHA_IMPLEMENTATION_PLAN.md
-
-# Course handout (not ours to redistribute; share it directly)
-Emergency Response Matching.pdf
+docs/VIVA_NOTES.md
+IMPLEMENTATION_PLAN.md
