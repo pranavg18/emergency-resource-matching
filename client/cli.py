@@ -16,7 +16,7 @@ def main():
         p.add_argument("--lon", type=float, required=True)
         p.add_argument("--label", default="")
         if command == "create-request":
-            p.add_argument("--details", default="")
+            p.add_argument("--details", required=True)
         else:
             p.add_argument("--availability", type=int, default=1)
     for command in ("get-request", "match", "request-status", "resource-status"):
@@ -50,7 +50,10 @@ def main():
                 if getattr(args, k, None) is not None}
     try:
         response = requests.request(method, args.url.rstrip("/") + path, json=data, params=params, timeout=60)
-        print(json.dumps(response.json(), indent=2))
+        try:
+            print(json.dumps(response.json(), indent=2))
+        except ValueError:
+            print(f"HTTP {response.status_code}: {response.text[:200]}")
         raise SystemExit(0 if response.ok else 1)
     except requests.RequestException as exc:
         parser.exit(1, f"API unavailable: {exc}\n")

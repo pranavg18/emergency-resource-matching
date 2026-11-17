@@ -241,6 +241,11 @@
         "interval": "5s",
         "timeout": "3s",
         "retries": 12
+      },
+      "depends_on": {
+        "rabbitmq": {
+          "condition": "service_healthy"
+        }
       }
     },
     "resource-service": {
@@ -293,6 +298,11 @@
         "interval": "5s",
         "timeout": "3s",
         "retries": 12
+      },
+      "depends_on": {
+        "rabbitmq": {
+          "condition": "service_healthy"
+        }
       }
     },
     "nginx": {
