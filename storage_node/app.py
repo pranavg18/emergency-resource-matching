@@ -13,7 +13,7 @@ from flask import Flask, request
 from . import web
 from .config import NodeConfig
 from .heartbeat import HeartbeatClient
-from .store import KEY_PATTERN, SCAN_PREFIXES, NotFound, Store, VersionConflict
+from .store import KEY_PATTERN, SCAN_PREFIXES, NotFound, Record, Store, VersionConflict
 from .web import ApiError, invalid, json_body
 
 log = logging.getLogger(__name__)
@@ -67,6 +67,29 @@ def _query_version() -> Optional[int]:
     if not _DIGITS.match(raw):
         raise invalid("if_version must be an integer >= 0")
     return int(raw)
+
+
+_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+
+
+def _replica_record(key: str, body: dict) -> Record:
+    """A row sent by the coordinator, copied from the primary."""
+    version = body.get("version")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        raise invalid("version must be an integer >= 1")
+    deleted = body.get("deleted", False)
+    if not isinstance(deleted, bool):
+        raise invalid("deleted must be true or false")
+    updated_at = body.get("updated_at")
+    if not isinstance(updated_at, str) or not _TIMESTAMP.match(updated_at):
+        raise invalid("updated_at must be an RFC 3339 UTC timestamp with milliseconds")
+    if deleted:
+        if body.get("value", "") != "":
+            raise invalid("a tombstone's value must be empty")
+        value = ""
+    else:
+        value = _checked_value(body)
+    return Record(key, value, version, deleted, updated_at)
 
 
 def _not_found(key: str) -> ApiError:
@@ -133,6 +156,12 @@ def create_app(config: Optional[NodeConfig] = None) -> Flask:
         except VersionConflict as err:
             raise _conflict(key, err) from None
         return {"key": record.key, "version": record.version, "deleted": True, "updated_at": record.updated_at}
+
+    @app.put("/internal/replica/<key>")
+    def put_replica(key: str):
+        _checked_key(key)
+        applied, version = store.apply_replica(_replica_record(key, json_body()))
+        return {"key": key, "version": version, "applied": applied}
 
     @app.get("/internal/data")
     def scan_data():

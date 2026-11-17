@@ -106,6 +106,86 @@ class Registry:
             self._on_needs_sync(node_id)
         return result
 
+    def primary(self, shard: int) -> Optional[NodeInfo]:
+        """The shard's primary if it is UP, else None."""
+        with self._lock:
+            info = self._shards[shard]
+            node = info.nodes.get(info.primary) if info.primary else None
+            return copy.copy(node) if node is not None and node.state == UP else None
+
+    def replicas(self, shard: int) -> list[NodeInfo]:
+        """Nodes that must receive every write besides the primary.
+
+        UP replicas, and SYNCING ones too: a node catching up must not miss
+        writes that arrive during its sync. DOWN nodes are skipped.
+        """
+        with self._lock:
+            info = self._shards[shard]
+            return [
+                copy.copy(node)
+                for node_id, node in sorted(info.nodes.items())
+                if node_id != info.primary and node.state in (UP, SYNCING)
+            ]
+
+    def readable(self, shard: int) -> list[NodeInfo]:
+        """Nodes allowed to serve reads, best first: the UP primary, then
+        UP replicas in the in-sync set. SYNCING and DOWN nodes never serve reads."""
+        with self._lock:
+            info = self._shards[shard]
+            ordered = sorted(info.in_sync, key=lambda node_id: node_id != info.primary)
+            return [copy.copy(info.nodes[n]) for n in ordered if info.nodes[n].state == UP]
+
+    def mark_down(self, node_id: str, reason: str) -> bool:
+        """Mark a node DOWN. Returns False if it already was.
+
+        The node leaves the in-sync set unless it is the last member: then it
+        keeps holding every acknowledged write, so the shard waits (503) for
+        it rather than promote a node that may lack writes. If it was the
+        primary, an in-sync UP node takes over.
+        Callers that serve data must hold the shard's write lock.
+        """
+        with self._lock:
+            shard = self._shard_of.get(node_id)
+            if shard is None:
+                return False
+            info = self._shards[shard]
+            node = info.nodes[node_id]
+            if node.state == DOWN:
+                return False
+            node.state = DOWN
+            if node_id in info.in_sync and len(info.in_sync) > 1:
+                info.in_sync.discard(node_id)
+            if info.primary == node_id:
+                successor = self._pick_primary(info)
+                if successor is not None:
+                    info.primary = successor
+                    node.role = REPLICA
+            new_primary = info.primary
+        log.warning("node %s marked DOWN (%s); shard %d primary is %s", node_id, reason, shard, new_primary)
+        return True
+
+    def stale(self, timeout_s: float) -> list[tuple[str, int]]:
+        """(node_id, shard) for every node not yet DOWN that has been silent too long."""
+        cutoff = time.monotonic() - timeout_s
+        with self._lock:
+            return [
+                (node.node_id, info.shard)
+                for info in self._shards
+                for node in info.nodes.values()
+                if node.state != DOWN and node.last_seen < cutoff
+            ]
+
+    def mark_down_if_stale(self, node_id: str, timeout_s: float) -> bool:
+        """Like mark_down, but only if the node is still silent (a heartbeat
+        may have arrived while the caller waited for the shard lock)."""
+        with self._lock:
+            shard = self._shard_of.get(node_id)
+            if shard is None:
+                return False
+            if self._shards[shard].nodes[node_id].last_seen >= time.monotonic() - timeout_s:
+                return False
+            return self.mark_down(node_id, f"no heartbeat for {timeout_s:.1f}s")
+
     def snapshot(self) -> list[ShardInfo]:
         """A deep copy of every shard, safe to read without the lock."""
         with self._lock:
