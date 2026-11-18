@@ -1,0 +1,179 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: request-service
+  labels: {app: request-service}
+spec:
+  replicas: 1
+  strategy:
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  selector:
+    matchLabels: {app: request-service}
+  template:
+    metadata:
+      labels: {app: request-service}
+    spec:
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsUser: 10001
+        runAsNonRoot: true
+      containers:
+        - name: request-service
+          image: emergency/request-service:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: 8000}
+          envFrom:
+            - configMapRef: {name: storage-config}
+            - configMapRef: {name: application-config}
+          env:
+            - name: RABBITMQ_USERNAME
+              valueFrom:
+                secretKeyRef: {name: rabbitmq-credentials, key: username}
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: rabbitmq-credentials, key: password}
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests: {cpu: 100m, memory: 96Mi}
+            limits: {memory: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: request-service
+spec:
+  selector: {app: request-service}
+  ports:
+    - {name: http, port: 8000, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resource-service
+  labels: {app: resource-service}
+spec:
+  replicas: 1
+  strategy:
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  selector:
+    matchLabels: {app: resource-service}
+  template:
+    metadata:
+      labels: {app: resource-service}
+    spec:
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsUser: 10001
+        runAsNonRoot: true
+      containers:
+        - name: resource-service
+          image: emergency/resource-service:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: 8000}
+          envFrom:
+            - configMapRef: {name: storage-config}
+            - configMapRef: {name: application-config}
+          env:
+            - name: RABBITMQ_USERNAME
+              valueFrom:
+                secretKeyRef: {name: rabbitmq-credentials, key: username}
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: rabbitmq-credentials, key: password}
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests: {cpu: 100m, memory: 96Mi}
+            limits: {memory: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: resource-service
+spec:
+  selector: {app: resource-service}
+  ports:
+    - {name: http, port: 8000, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: matching-service
+  labels: {app: matching-service}
+spec:
+  replicas: 1
+  strategy:
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  selector:
+    matchLabels: {app: matching-service}
+  template:
+    metadata:
+      labels: {app: matching-service}
+    spec:
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsUser: 10001
+        runAsNonRoot: true
+      containers:
+        - name: matching-service
+          image: emergency/matching-service:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: 8000}
+          envFrom:
+            - configMapRef: {name: storage-config}
+            - configMapRef: {name: application-config}
+          env:
+            - name: RABBITMQ_USERNAME
+              valueFrom:
+                secretKeyRef: {name: rabbitmq-credentials, key: username}
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: rabbitmq-credentials, key: password}
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: matching-service
+spec:
+  selector: {app: matching-service}
+  ports:
+    - {name: http, port: 8000, targetPort: http}

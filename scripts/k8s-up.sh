@@ -12,6 +12,7 @@ cd "$(dirname "$0")/.."
 
 TAG="${TAG:-dev}"
 NAMESPACE=emergency
+PROFILE="${MINIKUBE_PROFILE:-minikube}"
 
 if [[ ! "$TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
   echo "error: TAG must be a valid image tag (letters, digits, '.', '_', '-'), got '$TAG'" >&2
@@ -28,11 +29,21 @@ diagnose() {
 }
 trap diagnose ERR
 
+if [ "$(kubectl config current-context)" != "$PROFILE" ]; then
+  echo "error: select kubectl context $PROFILE before deploying (MINIKUBE_PROFILE=$PROFILE)." >&2
+  exit 2
+fi
+
+if ! kubectl -n "$NAMESPACE" get secret rabbitmq-credentials >/dev/null 2>&1; then
+  echo "error: create broker credentials first: python scripts/create-rabbitmq-secret.py" >&2
+  exit 2
+fi
+
 build() {  # build <image> <dockerfile> <context>
   echo "==> building $1:$TAG"
   docker build -q -t "$1:$TAG" -f "$2" "$3" >/dev/null
   echo "==> loading $1:$TAG into minikube"
-  minikube image load --overwrite=true "$1:$TAG"
+  minikube -p "$PROFILE" image load --overwrite=true "$1:$TAG"
 }
 
 build emergency/coordinator coordinator/Dockerfile coordinator

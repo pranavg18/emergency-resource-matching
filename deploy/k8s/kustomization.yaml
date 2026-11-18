@@ -7,3 +7,7 @@ resources:
   - config.yaml
   - coordinator.yaml
   - storage.yaml
+  - application-config.yaml
+  - rabbitmq.yaml
+  - applications.yaml
+  - ingress.yaml
