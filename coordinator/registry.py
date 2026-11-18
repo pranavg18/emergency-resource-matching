@@ -132,6 +132,11 @@ class Registry:
             shard = self._shard_of.get(node_id)
             return None if shard is None else copy.copy(self._shards[shard].nodes[node_id])
 
+    def syncing(self) -> list[str]:
+        """Ids of every node currently SYNCING."""
+        with self._lock:
+            return [n.node_id for info in self._shards for n in info.nodes.values() if n.state == SYNCING]
+
     def mark_in_sync(self, node_id: str) -> bool:
         """A SYNCING node finished its final sync pass: it is now an UP replica
         in the in-sync set, eligible to serve reads and to be promoted.

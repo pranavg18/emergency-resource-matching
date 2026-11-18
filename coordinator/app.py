@@ -55,7 +55,9 @@ def create_app(config: Optional[CoordinatorConfig] = None) -> Flask:
     syncer = SyncManager(registry, router)
     # gunicorn calls create_app() inside its single worker, so the detector
     # runs in the process that owns the registry.
-    FailureDetector(registry, router, config.heartbeat_interval_ms, config.heartbeat_timeout_ms).start()
+    FailureDetector(
+        registry, router, config.heartbeat_interval_ms, config.heartbeat_timeout_ms, request_sync=syncer.request
+    ).start()
 
     app = Flask(__name__)
     web.install(app)

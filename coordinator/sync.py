@@ -21,6 +21,10 @@ earlier coordinator process (it is based on the clock). The node refuses a
 pass older than one it has seen and makes a superseded pass stop before it
 writes again, so a pass whose call timed out here cannot change the node after
 a later attempt has finished.
+
+A request that arrives while this node's worker is already finishing is not
+dropped: it is recorded as pending, and the worker checks for it in the same
+locked step in which it would otherwise exit.
 """
 
 from __future__ import annotations
@@ -54,6 +58,7 @@ class SyncManager:
         self._router = router
         self._lock = threading.Lock()
         self._running: set[str] = set()
+        self._pending: set[str] = set()
         self._last_epoch = 0
 
     def next_epoch(self) -> int:
@@ -62,29 +67,38 @@ class SyncManager:
             return self._last_epoch
 
     def request(self, node_id: str) -> None:
-        """Start syncing `node_id` unless a sync for it is already running."""
+        """Make sure a sync of `node_id` runs. Safe to call repeatedly."""
         with self._lock:
             if node_id in self._running:
+                self._pending.add(node_id)  # the running worker will pick it up
                 return
             self._running.add(node_id)
         threading.Thread(target=self._run, args=(node_id,), name=f"sync-{node_id}", daemon=True).start()
 
+    def _finish(self, node_id: str) -> bool:
+        """Retire the worker unless a request arrived meanwhile. True = keep going."""
+        with self._lock:
+            if node_id in self._pending:
+                self._pending.discard(node_id)
+                return True
+            self._running.discard(node_id)
+            return False
+
     def _run(self, node_id: str) -> None:
         backoff = FIRST_BACKOFF_S
-        try:
-            while True:
-                try:
-                    outcome = self._attempt(node_id)
-                except Exception:
-                    log.exception("sync of %s failed unexpectedly", node_id)
-                    outcome = Outcome.RETRY
-                if outcome is not Outcome.RETRY:
-                    return
+        while True:
+            try:
+                outcome = self._attempt(node_id)
+            except Exception:
+                log.exception("sync of %s failed unexpectedly", node_id)
+                outcome = Outcome.RETRY
+            if outcome is Outcome.RETRY:
                 time.sleep(backoff)
                 backoff = min(backoff * 2, MAX_BACKOFF_S)
-        finally:
-            with self._lock:
-                self._running.discard(node_id)
+                continue
+            if not self._finish(node_id):
+                return
+            backoff = FIRST_BACKOFF_S
 
     def _sync_pass(self, url: str, source_url: str, final: bool) -> bool:
         body = {"source_url": source_url, "final": final, "epoch": self.next_epoch()}
