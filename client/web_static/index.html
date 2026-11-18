@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Emergency Resource Matching</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Emergency Resource Matching</h1>
+    <span id="connection" class="pill">connecting…</span>
+  </header>
+
+  <main>
+    <div id="map" aria-label="Map. Click to pick a location."></div>
+
+    <aside>
+      <section>
+        <h2>Picked location</h2>
+        <p class="hint">Click the map to place the pin. You can also type exact coordinates.</p>
+        <div class="row">
+          <label>Latitude <input id="lat" type="number" step="0.000001" min="-90" max="90" required></label>
+          <label>Longitude <input id="lon" type="number" step="0.000001" min="-180" max="180" required></label>
+        </div>
+        <label>Label (optional) <input id="label" maxlength="200" placeholder="e.g. Ward 12 depot"></label>
+      </section>
+
+      <section>
+        <div class="tabs" role="tablist">
+          <button type="button" role="tab" class="tab active" data-tab="request-form">New request</button>
+          <button type="button" role="tab" class="tab" data-tab="resource-form">New resource</button>
+        </div>
+
+        <form id="request-form" class="tab-panel">
+          <label>Type <select name="type" class="type-select"></select></label>
+          <label>Details <textarea name="details" maxlength="2000" rows="2" required
+                                   placeholder="e.g. Family of four needs drinking water"></textarea></label>
+          <button type="submit" class="primary">Create request</button>
+        </form>
+
+        <form id="resource-form" class="tab-panel" hidden>
+          <label>Type <select name="type" class="type-select"></select></label>
+          <label>Availability (units it can serve) <input name="availability" type="number" min="0" value="10" required></label>
+          <button type="submit" class="primary">Register resource</button>
+        </form>
+      </section>
+
+      <section id="selection" hidden>
+        <h2 id="selection-title">Selected</h2>
+        <dl id="selection-details"></dl>
+        <div id="selection-actions" class="actions"></div>
+      </section>
+
+      <section>
+        <h2>Storage cluster</h2>
+        <div id="cluster"><p class="hint">Loading…</p></div>
+      </section>
+
+      <section>
+        <h2>Show</h2>
+        <div class="row wrap">
+          <label class="check"><input id="show-closed" type="checkbox"> completed / cancelled requests</label>
+          <label class="check"><input id="show-offline" type="checkbox"> offline resources</label>
+        </div>
+        <div class="row">
+          <label>Type <select id="type-filter"><option value="">all types</option></select></label>
+          <button type="button" id="fit">Fit map to markers</button>
+        </div>
+        <div id="counts" class="hint"></div>
+      </section>
+
+      <section>
+        <h2>Activity</h2>
+        <ol id="activity"></ol>
+      </section>
+    </aside>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
