@@ -1,4 +1,6 @@
 # Everything needed to run the test suite locally and in CI.
+-r requirements.txt
 -r coordinator/requirements.txt
 -r storage_node/requirements.txt
 pytest==8.4.2
+ruff>=0.11,<1

@@ -1,23 +1,70 @@
 # Distributed Emergency Resource Matching System
 
-A distributed system that connects people who need emergency help (water, food, medicine, transportation, shelter) with available volunteers and resources. Requests are stored in a sharded, replicated key-value store, published to RabbitMQ, and matched asynchronously to the nearest available resource of the right type. Everything runs as containers on Kubernetes.
+A distributed application that accepts emergency requests, registers resources, and matches requests to nearby available resources. Versioned storage and compare-and-set updates coordinate concurrent matching, while RabbitMQ processes matching and release events asynchronously.
 
-Cloud Computing course project by Pranav Goyal and Aksha Alkesh Jain.
+## Architecture
 
-## Status
+- Three Flask microservices behind nginx: requests, resources, and matching.
+- One coordinator with three shards, each backed by two SQLite storage nodes.
+- One RabbitMQ instance for durable matching and release queues.
+- Docker Compose for local development.
+- Kubernetes on Minikube as the demo deployment target.
 
-Phase 0 — setup and contracts. See the roadmap in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+## Run
 
-## Architecture at a glance
+Requires Python 3.12 and Docker with Linux containers. Local endpoints are
+`http://localhost:8088` (API), `http://localhost:8008/cluster` (coordinator), and
+`http://localhost:15678` (RabbitMQ management, local login `emergency` / `local-dev`).
 
-- **3 microservices:** `request-service`, `resource-service`, `matching-service` (Python, Flask)
-- **Storage layer:** 1 coordinator, 3 shards, each with a primary and a replica (SQLite per node)
-- **Messaging:** 1 RabbitMQ instance between request processing and matching
-- **Deployment:** Docker Compose for local development, Kubernetes (Minikube) for the demo
+macOS/Linux (bash):
 
-## Documents
+```bash
+cp .env.example .env
+docker compose up -d --build
+docker compose ps
+curl http://localhost:8088/healthz
+curl http://localhost:8008/cluster
+```
 
-- [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) — design, ownership, roadmap
-- [docs/VIVA_NOTES.md](docs/VIVA_NOTES.md) — talking points for the demo and viva
+Windows (PowerShell):
 
-Setup, run and test instructions will be added as the components land.
+```powershell
+Copy-Item .env.example .env
+docker compose up -d --build
+docker compose ps
+Invoke-RestMethod http://localhost:8088/healthz
+Invoke-RestMethod http://localhost:8008/cluster
+```
+
+Use `docker compose logs -f --tail 30` for logs and `docker compose down` to stop
+the containers while preserving data volumes.
+
+## Test
+
+macOS/Linux (bash):
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python -m ruff check .
+.venv/bin/python -m pytest tests/unit -q
+docker compose config --quiet
+```
+
+Windows (PowerShell):
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python -m ruff check .
+.\.venv\Scripts\python -m pytest tests/unit -q
+docker compose config --quiet
+```
+
+The full process integration suite requires Linux. On Linux, run
+`.venv/bin/python -m pytest tests -q`. On any supported Docker host, run it in
+a Linux container (the same command works in bash and PowerShell):
+
+```text
+docker run --rm --mount "type=bind,source=.,target=/app,readonly" -w /app python:3.12-slim sh -c "pip install -r requirements-dev.txt && PYTHONDONTWRITEBYTECODE=1 python -m pytest tests -q -p no:cacheprovider"
+```

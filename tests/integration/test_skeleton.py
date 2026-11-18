@@ -46,7 +46,6 @@ def test_request_id_is_generated_when_missing(component):
 
 def test_storage_node_refuses_to_start_without_required_config(tmp_path):
     import subprocess
-    import sys
 
     from tests.integration.conftest import REPO_ROOT, _command, free_port
 
