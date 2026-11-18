@@ -90,8 +90,10 @@ class Demo:
             self.kube("rollout", "status", "deployment/matching-service", "--timeout=180s")
 
     def records(self, ids):
+        # Only this run's requests matter; skip any other record in the shared
+        # keyspace, including ones that do not follow the request schema.
         return {r["value"]["id"]: r["value"] for r in self.storage.scan("request:")
-                if r["value"]["id"] in ids}
+                if r["value"].get("id") in ids}
 
     def settled(self, ids):
         records = self.records(ids)
