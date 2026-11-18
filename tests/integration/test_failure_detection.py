@@ -50,42 +50,59 @@ def test_a_replica_that_fails_a_write_goes_down_at_once_and_the_write_stands(sta
     assert time.monotonic() - started < 1.5
 
 
-def test_a_returning_replica_must_sync_before_serving(start_cluster):
+def shard_view(cluster, shard=1):
+    return next(view for view in cluster.view()["shards"] if view["shard"] == shard)
+
+
+def in_sync(cluster, *node_ids, shard=1):
+    return sorted(shard_view(cluster, shard)["in_sync"]) == sorted(node_ids)
+
+
+def test_a_returning_replica_catches_up_on_the_writes_it_missed(start_cluster):
     cluster = start_cluster(replicas=2, shards=(1,))
+    assert wait_until(lambda: in_sync(cluster, "s1-a", "s1-b"), timeout=10)
     put(cluster, '{"n":1}')
     replica = cluster.nodes["s1-b"]
     replica.kill()
     assert wait_until(lambda: cluster.state_of("s1-b") == "DOWN", timeout=5)
+    assert in_sync(cluster, "s1-a")  # it left the in-sync set when it went down
     put(cluster, '{"n":2}')  # missed by the replica
 
     replica.start()  # same port and data directory
-    assert wait_until(lambda: cluster.state_of("s1-b") == "SYNCING", timeout=10), replica.logs()
-    assert raw(replica)["version"] == 1  # it lacks the write it missed...
-    assert get(cluster).json()["version"] == 2  # ...so reads keep coming from the primary
+    assert wait_until(lambda: in_sync(cluster, "s1-a", "s1-b"), timeout=15), replica.logs()
+    assert cluster.state_of("s1-b") == "UP"
+    assert raw(replica) == raw(cluster.nodes["s1-a"])
+    assert raw(replica)["version"] == 2
 
 
-def test_losing_the_only_in_sync_node_makes_the_shard_unavailable(start_cluster):
-    cluster = start_cluster(replicas=2, shards=(0, 1, 2))
+def test_a_stale_replica_is_never_promoted(start_cluster):
+    cluster = start_cluster(replicas=2, shards=(0, 1))
+    assert wait_until(lambda: in_sync(cluster, "s1-a", "s1-b"), timeout=10)
+    primary, replica = cluster.nodes["s1-a"], cluster.nodes["s1-b"]
     put(cluster, '{"n":1}')
-    primary = cluster.nodes["s1-a"]
+
+    replica.kill()
+    assert wait_until(lambda: cluster.state_of("s1-b") == "DOWN", timeout=5)
+    put(cluster, '{"n":2}')  # only the primary has this write
     primary.kill()
     assert wait_until(lambda: cluster.state_of("s1-a") == "DOWN", timeout=5)
+    assert in_sync(cluster, "s1-a")  # the last member is kept: it holds every write
 
-    # s1-b never finished a sync, so it must not be promoted: it may lack writes.
-    view = next(shard for shard in cluster.view()["shards"] if shard["shard"] == 1)
-    assert view["in_sync"] == ["s1-a"]
-    for response in (put(cluster, '{"n":2}'), get(cluster), requests.get(f"{cluster.url}/data?prefix=request:", timeout=10)):
+    replica.start()  # back, but it missed n=2 and has nothing to sync from
+    assert wait_until(lambda: cluster.state_of("s1-b") == "SYNCING", timeout=10), replica.logs()
+    time.sleep(1.5)
+    assert cluster.state_of("s1-b") == "SYNCING"  # never promoted
+    for response in (put(cluster, '{"n":3}'), get(cluster), requests.get(f"{cluster.url}/data?prefix=request:", timeout=10)):
         assert response.status_code == 503
         assert response.json()["error"]["code"] == "STORAGE_UNAVAILABLE"
-
-    # Other shards are unaffected.
-    other = "request:22222222-2222-4222-8222-222222222222"  # shard 0
+    other = "request:22222222-2222-4222-8222-222222222222"  # shard 0 is unaffected
     assert put(cluster, '{"n":1}', key=other).status_code == 200
 
     primary.start()
     assert wait_until(lambda: cluster.state_of("s1-a") == "UP", timeout=10), primary.logs()
-    assert get(cluster).json()["value"] == '{"n":1}'
-    assert put(cluster, '{"n":2}').status_code == 200
+    assert get(cluster).json()["value"] == '{"n":2}'  # nothing was lost
+    assert wait_until(lambda: in_sync(cluster, "s1-a", "s1-b"), timeout=15), replica.logs()
+    assert raw(replica) == raw(primary)
 
 
 def test_a_frozen_node_is_readmitted_by_its_next_heartbeat(start_cluster):

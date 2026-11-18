@@ -127,6 +127,33 @@ class Registry:
                 if node_id != info.primary and node.state in (UP, SYNCING)
             ]
 
+    def node(self, node_id: str) -> Optional[NodeInfo]:
+        with self._lock:
+            shard = self._shard_of.get(node_id)
+            return None if shard is None else copy.copy(self._shards[shard].nodes[node_id])
+
+    def syncing(self) -> list[str]:
+        """Ids of every node currently SYNCING."""
+        with self._lock:
+            return [n.node_id for info in self._shards for n in info.nodes.values() if n.state == SYNCING]
+
+    def mark_in_sync(self, node_id: str) -> bool:
+        """A SYNCING node finished its final sync pass: it is now an UP replica
+        in the in-sync set, eligible to serve reads and to be promoted.
+        Callers must hold the shard's write lock (no write can be in flight)."""
+        with self._lock:
+            shard = self._shard_of.get(node_id)
+            if shard is None:
+                return False
+            info = self._shards[shard]
+            node = info.nodes[node_id]
+            if node.state != SYNCING:
+                return False
+            node.state, node.role = UP, REPLICA
+            info.in_sync.add(node_id)
+        log.info("node %s is in sync and UP as a replica of shard %d", node_id, shard)
+        return True
+
     def readable(self, shard: int) -> list[NodeInfo]:
         """Nodes allowed to serve reads, best first: the UP primary, then
         UP replicas in the in-sync set. SYNCING and DOWN nodes never serve reads."""

@@ -8,11 +8,12 @@ import re
 import sqlite3
 from typing import Optional
 
-from flask import Flask, request
+from flask import Flask, g, request
 
 from . import web
 from .config import NodeConfig
 from .heartbeat import HeartbeatClient
+from .sync import SyncFailed, SyncFence, SyncSuperseded, run_sync
 from .store import KEY_PATTERN, SCAN_PREFIXES, NotFound, Record, Store, VersionConflict
 from .web import ApiError, invalid, json_body
 
@@ -107,6 +108,7 @@ def create_app(config: Optional[NodeConfig] = None) -> Flask:
     web.configure_logging(config.log_level, service="storage-node", node_id=config.node_id, shard=config.shard)
     os.makedirs(config.data_dir, exist_ok=True)
     store = Store(config.db_path)
+    fence = SyncFence()
 
     app = Flask(__name__)
     web.install(app)
@@ -170,6 +172,31 @@ def create_app(config: Optional[NodeConfig] = None) -> Flask:
             raise invalid(f"prefix must be one of {', '.join(SCAN_PREFIXES)}")
         records = [record.envelope() for record in store.scan(prefix)]
         return {"count": len(records), "records": records}
+
+    @app.get("/internal/sync/digest")
+    def sync_digest():
+        return {"node_id": config.node_id, "entries": store.digest()}
+
+    @app.post("/internal/sync/run")
+    def sync_run():
+        body = json_body()
+        source_url = body.get("source_url")
+        if not isinstance(source_url, str) or not source_url.startswith(("http://", "https://")):
+            raise invalid("source_url must be an http(s) URL")
+        final = body.get("final", False)
+        if not isinstance(final, bool):
+            raise invalid("final must be true or false")
+        epoch = body.get("epoch")
+        if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
+            raise invalid("epoch must be an integer >= 0")
+        if source_url.rstrip("/") == config.node_url:
+            raise invalid("a node cannot sync from itself")
+        try:
+            return run_sync(store, fence, source_url.rstrip("/"), final, epoch, g.get("request_id"))
+        except SyncFailed as err:
+            raise ApiError(502, "SYNC_FAILED", str(err)) from None
+        except SyncSuperseded as err:
+            raise ApiError(409, "SYNC_SUPERSEDED", str(err)) from None
 
     @app.get("/internal/stats")
     def stats():

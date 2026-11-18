@@ -11,6 +11,7 @@ parsed. Versions and the deleted flag live in their own columns.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import sqlite3
 import threading
@@ -73,6 +74,11 @@ class VersionConflict(Exception):
 def _check_expected(current: int, if_version: Optional[int]) -> None:
     if if_version is not None and if_version != current:
         raise VersionConflict(current)
+
+
+def content_hash(value: str) -> str:
+    """SHA-256 of the value's UTF-8 bytes, lowercase hex (contract §4.1)."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _record(row) -> Record:
@@ -176,6 +182,39 @@ class Store:
                 (record.key, record.value, record.version, int(record.deleted), record.updated_at),
             )
         return True, record.version
+
+    # --- recovery sync -----------------------------------------------------
+
+    def digest(self) -> dict[str, list]:
+        """Every row, tombstones included: key -> [version, SHA-256 of the value's UTF-8]."""
+        rows = self._conn().execute("SELECT key, value, version FROM kv").fetchall()
+        return {key: [version, content_hash(value)] for key, value, version in rows}
+
+    def overwrite(self, record: Record, *, allow_older: bool) -> bool:
+        """Make this node's row exactly `record`. Returns True if it wrote.
+
+        With allow_older=False (sync while writes are still flowing), a row
+        older than ours is skipped: a live replica write may have landed after
+        the source was read. With allow_older=True (the final pass, run while
+        the shard's writes are paused) the copy is exact whatever we held.
+        """
+        with self._write_tx() as conn:
+            current, _ = self._version_of(conn, record.key)
+            if not allow_older and record.version < current:
+                return False
+            conn.execute(
+                "INSERT INTO kv (key, value, version, deleted, updated_at) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, version = excluded.version, "
+                "deleted = excluded.deleted, updated_at = excluded.updated_at",
+                (record.key, record.value, record.version, int(record.deleted), record.updated_at),
+            )
+        return True
+
+    def remove(self, key: str) -> None:
+        """Drop a row completely. Only recovery sync does this, for rows the
+        source never had (writes that were never acknowledged)."""
+        with self._write_tx() as conn:
+            conn.execute("DELETE FROM kv WHERE key = ?", (key,))
 
     def scan(self, prefix: str) -> list[Record]:
         """Live records whose key starts with `prefix`, ordered by key."""

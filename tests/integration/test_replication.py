@@ -83,8 +83,14 @@ def cluster(start_cluster):
     return start_cluster(replicas=2)
 
 
-def test_second_node_receives_writes_but_is_not_read_from_yet(cluster):
-    assert cluster.state_of("s1-b") == "SYNCING"
+def test_second_node_syncs_and_joins_the_in_sync_set(cluster):
+    from tests.integration.conftest import wait_until
+
+    def shard_1():
+        return next(view for view in cluster.view()["shards"] if view["shard"] == 1)
+
+    assert wait_until(lambda: shard_1()["in_sync"] == ["s1-a", "s1-b"], timeout=10)
+    assert cluster.state_of("s1-b") == "UP"
     requests.put(f"{cluster.url}/data/{KEY}", json={"value": '{"n":1}'}, timeout=5)
     assert raw(cluster.nodes["s1-a"], KEY) == raw(cluster.nodes["s1-b"], KEY)
     assert raw(cluster.nodes["s1-b"], KEY)["version"] == 1

@@ -111,12 +111,29 @@ class Router:
         self._registry.mark_down(replica.node_id, f"replica write failed: {exc}")
 
     def _on_primary(self, shard: int, primary: NodeInfo, method: str, path: str, **kwargs) -> NodeReply:
+        """Run a write on the primary. Caller holds the shard lock.
+
+        If the primary does not answer, it is marked DOWN, which promotes an
+        in-sync replica when there is one, and the write is retried once on
+        that new primary. So a write in flight while the primary dies still
+        succeeds instead of returning 503. The replica had every acknowledged
+        write, so applying this one there (with the same if_version) is safe.
+        If the old primary did commit it before dying, recovery sync replaces
+        its copy with the new primary's when it returns.
+        """
         try:
             reply = nodes.call(method, primary.url, path, **kwargs)
         except NodeUnreachable as exc:
-            # Caller holds the shard lock, so the role change cannot race a write.
             self._registry.mark_down(primary.node_id, f"primary call failed: {exc}")
-            raise _unavailable(shard, f"primary {primary.node_id} did not answer") from None
+            successor = self._registry.primary(shard)
+            if successor is None or successor.node_id == primary.node_id:
+                raise _unavailable(shard, f"primary {primary.node_id} did not answer") from None
+            log.warning("primary %s failed mid-write; retrying on %s", primary.node_id, successor.node_id)
+            try:
+                reply = nodes.call(method, successor.url, path, **kwargs)
+            except NodeUnreachable as retry_exc:
+                self._registry.mark_down(successor.node_id, f"primary call failed: {retry_exc}")
+                raise _unavailable(shard, "primary and its successor did not answer") from None
         if reply.status != 200:
             raise _relay(reply)
         return reply
