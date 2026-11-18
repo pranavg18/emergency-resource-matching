@@ -133,6 +133,33 @@ Stop a Compose stack using those local ports before opening the forwards. Use
 `kubectl --context emergency-demo -n emergency get pods,pvc,ingress` to inspect
 the deployment. `minikube stop -p emergency-demo` stops it while retaining data.
 
+## Web client (map)
+
+A browser client for the same API the CLI uses. With the API on port 8088 and
+the coordinator on 8008 (the two forwards above, or the Compose stack), run:
+
+```text
+python -m client.web
+```
+
+and open http://localhost:5050. Click the map to pick exact coordinates (or
+type them), then create a request or register a resource there. Requests and
+resources appear as markers coloured by status and refresh every two seconds,
+so asynchronous matching shows as a dashed line from a request to its assigned
+resource. Selecting a marker shows its details and actions: match a request
+now, start, complete or cancel it, take a resource offline or change its
+availability. A side panel shows each shard's primary and the state of every
+storage node, so a storage failure and recovery can be watched live.
+
+`client/web.py` serves the page and forwards its calls (`/api/requests`,
+`/api/resources`, `/api/match`) to the API, so the browser talks to one origin
+and nothing in the cluster changes; it is a client, like the CLI. The public
+API has no request-listing endpoint, so the map reads the request list from the
+coordinator, as `client.check` does; that path is read-only. Use `--api`,
+`--coordinator` and `--port` for other addresses. The map uses
+[Leaflet](https://leafletjs.com) with OpenStreetMap tiles, both loaded over the
+internet.
+
 ## Demo runbook
 
 With the two forwards running, use a third terminal from the repository root
