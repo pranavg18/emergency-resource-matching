@@ -110,7 +110,7 @@ def log(event, **fields):
 
 def app_base(name, readiness=None):
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    logging.getLogger("pika").setLevel(logging.WARNING)
+    logging.getLogger("pika").setLevel(logging.CRITICAL)
     app = Flask(name)
     app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
 

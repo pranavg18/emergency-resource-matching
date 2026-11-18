@@ -1,13 +1,19 @@
 """Short-lived publisher connections are thread-local by construction."""
 import json
+import os
 
 import pika
 
-from common.config import Settings, get_int
+from common.config import Settings, get_int, get_str
 
 
 def connection():
     params = pika.URLParameters(Settings.from_env().rabbitmq_url)
+    # Kubernetes supplies credentials separately, avoiding URL escaping and
+    # keeping the password out of the public ConfigMap.
+    if "RABBITMQ_USERNAME" in os.environ or "RABBITMQ_PASSWORD" in os.environ:
+        params.credentials = pika.PlainCredentials(
+            get_str("RABBITMQ_USERNAME"), get_str("RABBITMQ_PASSWORD"))
     params.socket_timeout = 3
     params.stack_timeout = 5
     params.blocked_connection_timeout = 3

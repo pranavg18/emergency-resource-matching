@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 
 import pika
 
@@ -13,6 +14,7 @@ class Worker:
         self.matcher = matcher
         self.settings = Settings.from_env()
         self.stop = threading.Event()
+        self.threads = []
 
     def handle(self, message, release=False):
         if not isinstance(message, dict) or not isinstance(message.get("request_id"), str):
@@ -32,6 +34,7 @@ class Worker:
         except APIError as exc:
             if exc.status < 500:
                 raise
+            log("match_retry", request_id=message["request_id"], reason=str(exc))
             publish("retry", message)  # Storage errors do not consume search attempts.
             return
         if not result["matched"]:
@@ -51,6 +54,8 @@ class Worker:
                 ch.basic_qos(prefetch_count=1)
 
                 def callback(channel, method, properties, raw):
+                    if self.stop.is_set():
+                        return  # Closing this connection will requeue undelivered work.
                     correlation.set(properties.correlation_id or "consumer")
                     log("consume", redelivered=method.redelivered,
                         correlation_id=properties.correlation_id)
@@ -72,8 +77,10 @@ class Worker:
                         log("dead_letter", error=type(exc).__name__)
                         channel.basic_reject(method.delivery_tag, requeue=False)
                     else:
-                        if not self.stop.is_set():
-                            channel.basic_ack(method.delivery_tag)
+                        # SIGTERM stops new work, but a completed handler still owns
+                        # this delivery. Ack before the consumer closes its connection.
+                        channel.basic_ack(method.delivery_tag)
+                        log("consume_acked", correlation_id=properties.correlation_id)
 
                 ch.basic_consume("match.requests", callback)
                 ch.basic_consume("match.released", callback)
@@ -83,7 +90,10 @@ class Worker:
                 log("consumer_reconnect", error=type(exc).__name__)
             finally:
                 if conn and conn.is_open:
-                    conn.close()
+                    try:
+                        conn.close()
+                    except (pika.exceptions.AMQPError, OSError):
+                        pass  # The broker requeues any unacknowledged delivery.
             self.stop.wait(2)
 
     def sweeper(self):
@@ -96,4 +106,16 @@ class Worker:
 
     def start(self):
         for target in (self.consume, self.sweeper):
-            threading.Thread(target=target, daemon=True).start()
+            thread = threading.Thread(target=target, name=target.__name__, daemon=True)
+            self.threads.append(thread)
+            thread.start()
+
+    def shutdown(self, timeout=25):
+        """Drain on the owning threads; Pika connections are not thread-safe."""
+        self.stop.set()
+        deadline = time.monotonic() + timeout
+        for thread in self.threads:
+            thread.join(max(0, deadline - time.monotonic()))
+        pending = [thread.name for thread in self.threads if thread.is_alive()]
+        log("worker_shutdown", drained=not pending, pending=pending)
+        return not pending
