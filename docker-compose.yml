@@ -275,6 +275,7 @@
       }
     },
     "matching-service": {
+      "stop_grace_period": "45s",
       "build": {
         "context": ".",
         "dockerfile": "services/matching_service/Dockerfile"

@@ -16,7 +16,22 @@ def create_app(storage=None, publisher=None):
     def create():
         value = new_record(body())
         key = "request:" + value["id"]
-        record = storage.put(key, value, 0)
+        for _ in range(5):
+            try:
+                record = storage.put(key, value, 0)
+                break
+            except (Unavailable, Conflict):
+                # A timed-out create may already be committed. Keep the same
+                # UUID and create-only CAS so recovery cannot create a duplicate.
+                try:
+                    record = storage.get(key)
+                    value = record["value"]
+                    break
+                except APIError as exc:
+                    if exc.status not in (404, 503):
+                        raise
+        else:
+            raise Unavailable("request creation is busy; retry")
         try:
             publisher("request.created", {"request_id": value["id"], "attempt": 0,
                                           "correlation_id": g.correlation_id})

@@ -22,6 +22,7 @@ pytestmark = pytest.mark.skipif(
 
 KUBECTL_STUB = """#!/usr/bin/env bash
 echo "kubectl $*" >> "$STUB_DIR/calls.log"
+if [ "$1 $2" = "config current-context" ]; then echo "${MINIKUBE_PROFILE:-minikube}"; exit 0; fi
 if [ "$1" = kustomize ]; then exec "$REAL_KUBECTL" "$@"; fi
 if [ "$1" = apply ] && [ "$2" = -f ]; then cp "$3" "$STUB_DIR/applied.yaml"; fi
 if [[ "$*" == *"rollout status statefulset"* ]] && [ -n "${FAIL_STATEFULSET:-}" ]; then
@@ -68,6 +69,10 @@ def test_default_tag_deploys_dev_images(stubs):
     images = applied_images(stubs)
     assert "emergency/coordinator:dev" in images
     assert "emergency/storage-node:dev" in images
+    assert "emergency/matching-service:dev" in images
+    assert "emergency/request-service:dev" in images
+    assert "emergency/resource-service:dev" in images
+    assert "rabbitmq:3.13-management" in images
     assert "Done." in result.stdout
 
 
@@ -76,9 +81,11 @@ def test_custom_tag_reaches_every_applied_image(stubs):
     assert result.returncode == 0, result.stderr
     images = applied_images(stubs)
     assert images, "nothing was applied"
-    assert all(image.endswith(":review-v2") for image in images), images
+    assert all(image.endswith(":review-v2") for image in images
+               if image.startswith("emergency/")), images
+    assert "rabbitmq:3.13-management" in images
     calls = (stubs / "calls.log").read_text()
-    assert "minikube image load --overwrite=true emergency/coordinator:review-v2" in calls
+    assert "minikube -p minikube image load --overwrite=true emergency/coordinator:review-v2" in calls
 
 
 def test_failed_storage_rollout_fails_the_script(stubs):

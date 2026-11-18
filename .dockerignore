@@ -4,5 +4,8 @@ __pycache__
 .pytest_cache
 .ruff_cache
 artifacts
+docs
+IMPLEMENTATION_PLAN.md
+AKSHA_IMPLEMENTATION_PLAN.md
 .env
 *.db
