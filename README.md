@@ -190,6 +190,19 @@ and wait for the sweeper to publish and match it (up to roughly a minute). Do no
 remove its PVC or change its Secret. Application logs retain structured retry
 events while suppressing Pika's repeated connection tracebacks.
 
-Application recovery checks restart matching-service. Run storage-failure and
-recovery-sync checks with the corresponding storage implementation before the
-combined final dry run.
+### Storage failure and node recovery
+
+```text
+SHARD=1 bash scripts/demo-storage-failure.sh
+```
+
+The script shows the cluster before, during and after a storage-node outage.
+It scales the chosen shard's primary StatefulSet to zero; the coordinator marks
+that node DOWN after about six seconds of missed heartbeats and promotes the
+in-sync replica, and reads and writes on the shard keep working. It then scales
+the node back to one: the node syncs the writes it missed, rejoins as the
+replica (the roles have swapped), and the script reads those writes directly
+from the recovered node's own storage. `SHARD` may be 0, 1 or 2 (default 1).
+The script uses two temporary request records on that shard and deletes them on
+exit, and if it stops early it scales the node back up. It forwards the
+coordinator on port 18008, so it can run alongside the two forwards above.

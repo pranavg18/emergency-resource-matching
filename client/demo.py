@@ -187,6 +187,34 @@ class Demo:
                            "name", "messages_ready", "messages_unacknowledged", "--quiet", "--formatter=json")
         return json.loads(result.stdout[result.stdout.index("["):])
 
+    def force_kill(self, name, attempts=2):
+        """Stop the pod's container with no grace through the node's runtime.
+
+        A namespace's PID 1 may ignore signals sent from inside it, so the stop
+        goes through crictl on the Minikube node. The container ID is read
+        fresh on every attempt: if the pod restarted after its status was last
+        read, a stale ID makes crictl fail. A failure prints crictl's own error
+        and is retried. Returns the restart count read just before the
+        successful stop.
+        """
+        error = ""
+        for attempt in range(1, attempts + 1):
+            status = json.loads(self.kube("get", "pod", name, "-o", "json").stdout)["status"]
+            container = status["containerStatuses"][0]
+            container_id = container["containerID"].split("://")[-1]
+            assert re.fullmatch(r"[0-9a-f]{64}", container_id), container_id
+            result = subprocess.run(["minikube", "-p", self.args.context, "ssh", "--", "sudo",
+                                     "crictl", "stop", "--timeout", "0", container_id],
+                                    capture_output=True, text=True, timeout=60)
+            if result.returncode == 0:
+                return container["restartCount"]
+            error = (result.stderr or result.stdout).strip() or f"exit status {result.returncode}"
+            print(f"crictl stop failed (attempt {attempt} of {attempts}): {error}",
+                  file=sys.stderr, flush=True)
+            if attempt < attempts:
+                time.sleep(2)
+        raise RuntimeError(f"could not stop the {name} container: {error}")
+
     def interrupt(self, hard):
         self.until(lambda: any(q["name"] == "match.requests" and q["messages_unacknowledged"] > 0
                                for q in self.queues()), 60)
@@ -195,16 +223,9 @@ class Demo:
         assert len(active) == 1, "recovery test expects exactly one matcher pod"
         pod = active[0]
         name = pod["metadata"]["name"]
-        restarts = pod["status"]["containerStatuses"][0]["restartCount"]
         exit_code = None
         if hard:
-            container_id = pod["status"]["containerStatuses"][0]["containerID"].split("://")[-1]
-            assert re.fullmatch(r"[0-9a-f]{64}", container_id), container_id
-            # A namespace's PID 1 may ignore signals sent from inside it. Stop
-            # this exact container through the node's runtime with no grace.
-            subprocess.run(["minikube", "-p", self.args.context, "ssh", "--", "sudo",
-                            "crictl", "stop", "--timeout", "0", container_id],
-                           capture_output=True, text=True, check=True, timeout=60)
+            restarts = self.force_kill(name)
 
             def restarted():
                 current = json.loads(self.kube("get", "pod", name, "-o", "json").stdout)
