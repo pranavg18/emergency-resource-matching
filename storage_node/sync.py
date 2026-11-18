@@ -1,0 +1,79 @@
+"""Recovery sync: make this node a copy of a source node (the shard's primary).
+
+One pass compares the source's digest with ours and copies every row that
+differs: a different version, or the same version with different content (two
+nodes can hold different values under one version if a primary committed a
+write and died before replicating it). The coordinator runs two passes:
+
+1. `final=False` while writes keep flowing, to copy the bulk. A row older
+   than ours is skipped, since a live write may have landed after we read the
+   source; nothing is deleted.
+2. `final=True` while it holds the shard's write lock, so nothing changes
+   underneath. The copy is then exact: rows are overwritten whatever version we
+   held, and rows the source does not have are removed. Those were never
+   acknowledged, so dropping them loses nothing.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Optional
+from urllib.parse import quote
+
+import requests
+
+from .store import Record, Store
+
+log = logging.getLogger(__name__)
+
+SOURCE_TIMEOUT_S = 10.0
+
+
+class SyncFailed(Exception):
+    """The source could not be read."""
+
+
+def _get(session: requests.Session, url: str, request_id: Optional[str], **params) -> requests.Response:
+    headers = {"X-Request-ID": request_id} if request_id else {}
+    try:
+        response = session.get(url, params=params or None, headers=headers, timeout=SOURCE_TIMEOUT_S)
+    except requests.RequestException as exc:
+        raise SyncFailed(f"GET {url}: {exc.__class__.__name__}") from exc
+    if response.status_code >= 500:
+        raise SyncFailed(f"GET {url}: HTTP {response.status_code}")
+    return response
+
+
+def run_sync(store: Store, source_url: str, final: bool, request_id: Optional[str] = None) -> dict:
+    with requests.Session() as session:
+        response = _get(session, f"{source_url}/internal/sync/digest", request_id)
+        try:
+            source = response.json()["entries"]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise SyncFailed("source digest is not valid") from exc
+
+        local = store.digest()
+        copied = 0
+        for key, entry in source.items():
+            if local.get(key) == entry:
+                continue
+            reply = _get(
+                session, f"{source_url}/internal/data/{quote(key, safe=':')}", request_id, include_deleted="true"
+            )
+            if reply.status_code == 404:
+                continue  # cannot happen (rows are never removed on a primary); nothing to copy
+            if reply.status_code != 200:
+                raise SyncFailed(f"source answered {reply.status_code} for {key}")
+            row = reply.json()
+            record = Record(row["key"], row["value"], row["version"], row["deleted"], row["updated_at"])
+            if store.overwrite(record, allow_older=final):
+                copied += 1
+
+        removed = 0
+        if final:
+            for key in set(local) - set(source):
+                store.remove(key)
+                removed += 1
+
+    log.info("sync from %s (final=%s): copied %d, removed %d", source_url, final, copied, removed)
+    return {"copied": copied, "deleted": removed, "final": final}
