@@ -13,6 +13,7 @@ from .config import SHARD_COUNT, CoordinatorConfig
 from .monitor import FailureDetector
 from .registry import DOWN, NodeInfo, Registry, RegistryError, UnknownNode, describe
 from .router import Router
+from .sync import SyncManager
 from .web import ApiError, invalid, json_body
 
 log = logging.getLogger(__name__)
@@ -42,19 +43,16 @@ def _url(body: dict) -> str:
     return url.rstrip("/")
 
 
-def _sync_requested(node_id: str) -> None:
-    # Recovery sync arrives with feat/recovery-sync. Until then the node
-    # stays SYNCING and is never read from, which is the safe default.
-    log.info("sync requested for %s (recovery sync not implemented yet)", node_id)
-
-
 def create_app(config: Optional[CoordinatorConfig] = None) -> Flask:
     config = config or CoordinatorConfig.from_env()
     web.configure_logging(config.log_level, service="coordinator")
 
-    registry = Registry(SHARD_COUNT, on_needs_sync=_sync_requested)
+    # The registry asks for a sync whenever it admits a node as SYNCING; the
+    # manager is created just below (it needs the router's shard locks).
+    registry = Registry(SHARD_COUNT, on_needs_sync=lambda node_id: syncer.request(node_id))
     pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="node-call")
     router = Router(registry, pool)
+    syncer = SyncManager(registry, router)
     # gunicorn calls create_app() inside its single worker, so the detector
     # runs in the process that owns the registry.
     FailureDetector(registry, router, config.heartbeat_interval_ms, config.heartbeat_timeout_ms).start()
