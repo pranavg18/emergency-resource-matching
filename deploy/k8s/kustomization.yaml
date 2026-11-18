@@ -1,0 +1,9 @@
+# kubectl apply -k deploy/k8s
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: emergency
+resources:
+  - namespace.yaml
+  - config.yaml
+  - coordinator.yaml
+  - storage.yaml

@@ -158,6 +158,25 @@ class Store:
             )
         return record
 
+    def apply_replica(self, record: Record) -> tuple[bool, int]:
+        """Store a row exactly as the primary wrote it, if it is newer than ours.
+
+        Never bumps the version. Returns (applied, version now held). Getting a
+        version we already hold is normal (retries, sync overlapping live
+        writes) and is not an error.
+        """
+        with self._write_tx() as conn:
+            current, _ = self._version_of(conn, record.key)
+            if record.version <= current:
+                return False, current
+            conn.execute(
+                "INSERT INTO kv (key, value, version, deleted, updated_at) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, version = excluded.version, "
+                "deleted = excluded.deleted, updated_at = excluded.updated_at",
+                (record.key, record.value, record.version, int(record.deleted), record.updated_at),
+            )
+        return True, record.version
+
     def scan(self, prefix: str) -> list[Record]:
         """Live records whose key starts with `prefix`, ordered by key."""
         if prefix not in SCAN_PREFIXES:
