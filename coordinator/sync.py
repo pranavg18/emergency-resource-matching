@@ -15,6 +15,12 @@ An attempt that cannot finish (no primary up, a node call fails, the primary
 changed in between) is retried with backoff. The sync is abandoned if the node
 stops being SYNCING (for example it went DOWN); it is requested again when the
 node is re-admitted.
+
+Every pass carries a new epoch, larger than any issued before, even by an
+earlier coordinator process (it is based on the clock). The node refuses a
+pass older than one it has seen and makes a superseded pass stop before it
+writes again, so a pass whose call timed out here cannot change the node after
+a later attempt has finished.
 """
 
 from __future__ import annotations
@@ -48,6 +54,12 @@ class SyncManager:
         self._router = router
         self._lock = threading.Lock()
         self._running: set[str] = set()
+        self._last_epoch = 0
+
+    def next_epoch(self) -> int:
+        with self._lock:
+            self._last_epoch = max(self._last_epoch + 1, time.time_ns())
+            return self._last_epoch
 
     def request(self, node_id: str) -> None:
         """Start syncing `node_id` unless a sync for it is already running."""
@@ -75,11 +87,9 @@ class SyncManager:
                 self._running.discard(node_id)
 
     def _sync_pass(self, url: str, source_url: str, final: bool) -> bool:
+        body = {"source_url": source_url, "final": final, "epoch": self.next_epoch()}
         try:
-            reply = nodes.call(
-                "POST", url, "/internal/sync/run",
-                json={"source_url": source_url, "final": final}, timeout=SYNC_CALL_TIMEOUT_S,
-            )
+            reply = nodes.call("POST", url, "/internal/sync/run", json=body, timeout=SYNC_CALL_TIMEOUT_S)
         except NodeUnreachable as exc:
             log.warning("sync pass (final=%s) failed: %s", final, exc)
             return False

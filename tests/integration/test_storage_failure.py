@@ -88,7 +88,7 @@ def test_sync_run_rejects_bad_input(start_storage_node, body):
 
 def test_sync_run_refuses_to_copy_from_itself(start_storage_node):
     node = start_storage_node(node_id="s1-b", shard=1)
-    response = requests.post(f"{node.url}/internal/sync/run", json={"source_url": node.url}, timeout=5)
+    response = requests.post(f"{node.url}/internal/sync/run", json={"source_url": node.url, "epoch": 1}, timeout=5)
     assert response.status_code == 400
 
 
@@ -97,7 +97,7 @@ def test_sync_run_reports_an_unreachable_source(start_storage_node):
 
     node = start_storage_node(node_id="s1-b", shard=1)
     response = requests.post(
-        f"{node.url}/internal/sync/run", json={"source_url": f"http://127.0.0.1:{free_port()}"}, timeout=15
+        f"{node.url}/internal/sync/run", json={"source_url": f"http://127.0.0.1:{free_port()}", "epoch": 1}, timeout=15
     )
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "SYNC_FAILED"
