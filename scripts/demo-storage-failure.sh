@@ -21,6 +21,13 @@ PORT="${PORT:-18008}"
 API="http://localhost:$PORT"
 SHARD="${SHARD:-1}"
 
+# Checked before anything else runs: the key search below only ends for a
+# shard that exists, so any other value would make it loop forever.
+if [[ ! "$SHARD" =~ ^[012]$ ]]; then
+  echo "error: SHARD must be 0, 1 or 2 (the cluster has three shards), got '$SHARD'" >&2
+  exit 2
+fi
+
 # Two fresh keys owned by $SHARD (MD5 of the key, mod 3), unique to this run.
 # They hold complete request records with status CANCELLED: valid for every
 # service that scans requests, and ignored by the matcher, which only acts on
@@ -33,6 +40,10 @@ while len(keys) < 2:
     if int.from_bytes(hashlib.md5(key.encode()).digest(), "big") % 3 == int(sys.argv[1]):
         keys.append(key)
 print(*keys)' "$SHARD")
+if [ -z "${OUTAGE_KEY:-}" ]; then
+  echo "error: could not generate demo keys (is python3 installed?)" >&2
+  exit 1
+fi
 
 scaled_down=""
 cleanup() {
