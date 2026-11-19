@@ -5,7 +5,7 @@ import json
 import pytest
 import requests
 
-from client.web import MAX_LISTED_REQUESTS, create_app
+from client.web import MAX_LISTED_CLOSED, create_app
 
 
 class FakeResponse:
@@ -118,52 +118,78 @@ def test_all_requests_are_decoded_newest_first_and_foreign_records_skipped():
     body = client.get("/api/all-requests").get_json()
 
     assert [r["id"] for r in body["requests"]] == ["new", "old"]
-    assert body["count"] == 2 and body["truncated"] is False
+    assert body["count"] == 2 and body["closed_omitted"] == 0
     assert session.calls[0]["url"] == "http://coordinator.test/data"
     assert session.calls[0]["params"] == {"prefix": "request:"}
 
 
-def test_the_request_list_is_capped():
-    many = {"records": [{"key": "request:x", "value": json.dumps(
-        {"id": str(i), "location": {"lat": 0, "lon": 0}, "created_at": f"2026-11-19T00:00:{i % 60:02d}.000Z"})}
-        for i in range(MAX_LISTED_REQUESTS + 10)]}
-    client, _ = client_for(FakeResponse(200, many))
-    body = client.get("/api/all-requests").get_json()
-    assert len(body["requests"]) == MAX_LISTED_REQUESTS
-    assert body["count"] == MAX_LISTED_REQUESTS + 10 and body["truncated"] is True
+def stored_request(i, status, hour):
+    return {"key": "request:x", "value": json.dumps({"id": i, "status": status, "location": {"lat": 0, "lon": 0},
+                                                      "created_at": f"2026-11-19T{hour:02d}:00:00.000Z"})}
 
 
-def test_the_cap_drops_closed_requests_never_an_older_open_one():
-    def stored(i, status, hour):
-        return {"key": "request:x", "value": json.dumps({"id": i, "status": status, "location": {"lat": 0, "lon": 0},
-                                                          "created_at": f"2026-11-19T{hour:02d}:00:00.000Z"})}
-
-    # The one open request is the oldest record; newer closed requests alone would fill the cap.
-    records = [stored("old-open", "PENDING", 0)]
-    records += [stored(f"closed-{n}", "COMPLETED", 1 + n % 20) for n in range(MAX_LISTED_REQUESTS)]
+def test_every_open_request_is_listed_however_many_there_are():
+    records = [stored_request(f"open-{n}", "PENDING", n % 24) for n in range(MAX_LISTED_CLOSED + 1)]
     client, _ = client_for(FakeResponse(200, {"records": records}))
 
     body = client.get("/api/all-requests").get_json()
 
-    assert body["requests"][0]["id"] == "old-open"
-    assert body["count"] == MAX_LISTED_REQUESTS + 1 and body["open"] == 1 and body["truncated"] is True
+    assert len(body["requests"]) == body["open"] == body["count"] == MAX_LISTED_CLOSED + 1
+    assert body["closed_omitted"] == 0
+
+
+def test_only_the_oldest_closed_requests_are_left_out():
+    # The open request is the oldest record; the newer closed ones exceed the cap.
+    records = [stored_request("old-open", "PENDING", 0)]
+    records += [stored_request(f"closed-{n}", "COMPLETED" if n % 2 else "CANCELLED", 1 + n % 20)
+                for n in range(MAX_LISTED_CLOSED + 10)]
+    client, _ = client_for(FakeResponse(200, {"records": records}))
+
+    body = client.get("/api/all-requests").get_json()
+
+    ids = [r["id"] for r in body["requests"]]
+    assert ids[0] == "old-open" and len(ids) == 1 + MAX_LISTED_CLOSED
+    assert (body["count"], body["open"], body["closed"]) == (MAX_LISTED_CLOSED + 11, 1, MAX_LISTED_CLOSED + 10)
+    assert body["closed_omitted"] == 10
+
+
+def test_match_now_is_forwarded_with_its_empty_json_body():
+    # Regression: the page's "Match now" button once sent no body (so no
+    # Content-Type) and the JSON guard rejected it with 415.
+    client, session = client_for(FakeResponse(200, {"id": "r1", "status": "MATCHED"}))
+    reply = client.post("/api/match/r1", json={}, headers={"Origin": "http://localhost"})
+    assert reply.status_code == 200
+    assert (session.calls[0]["method"], session.calls[0]["url"]) == ("POST", "http://api.test/match/r1")
 
 
 def test_writes_must_be_json():
     client, session = client_for()
     reply = client.post("/api/requests", data='{"type": "water"}', content_type="text/plain")
     assert reply.status_code == 415 and reply.get_json()["error"]["code"] == "UNSUPPORTED_MEDIA_TYPE"
+    # A bodyless write is refused too: a cross-site page can send one without a preflight.
+    assert client.post("/api/match/r1").status_code == 415
     assert session.calls == []
 
 
-def test_writes_from_another_origin_are_refused():
+@pytest.mark.parametrize("origin", [
+    "https://evil.example",
+    "https://localhost",        # same host and default port, different scheme
+    "http://localhost:8080",    # same host, different port
+    "null",                     # sandboxed or opaque origins
+])
+def test_writes_from_another_origin_are_refused(origin):
+    client, session = client_for()
+    reply = client.post("/api/requests", json={}, headers={"Origin": origin})
+    assert reply.status_code == 403 and reply.get_json()["error"]["code"] == "FORBIDDEN_ORIGIN"
+    assert session.calls == []
+
+
+@pytest.mark.parametrize("origin, host", [("http://localhost", "localhost"), ("http://localhost:80", "localhost"),
+                                          ("http://127.0.0.1:5050", "127.0.0.1:5050"), ("http://[::1]:5050", "[::1]:5050")])
+def test_writes_from_this_page_are_accepted(origin, host):
     client, session = client_for(FakeResponse(201, {"id": "r1"}))
-    foreign = client.post("/api/requests", json={}, headers={"Origin": "https://evil.example"})
-    assert foreign.status_code == 403 and foreign.get_json()["error"]["code"] == "FORBIDDEN_ORIGIN"
-    assert session.calls == []
-
-    own = client.post("/api/requests", json={}, headers={"Origin": "http://localhost"})
-    assert own.status_code == 201 and len(session.calls) == 1
+    reply = client.post("/api/requests", json={}, headers={"Origin": origin, "Host": host})
+    assert reply.status_code == 201 and len(session.calls) == 1
 
 
 @pytest.mark.parametrize("host", ["evil.example", "evil.example:5050"])

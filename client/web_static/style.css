@@ -130,8 +130,10 @@ dd { margin: 0; overflow-wrap: anywhere; }
 }
 
 .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--panel); color: var(--text); }
-.picker { display: flex; flex-direction: column; gap: 4px; font: 13px/1.4 system-ui, sans-serif; }
-.picker button { text-align: left; }
+.picker { display: flex; flex-direction: column; gap: 6px; font: 13px/1.4 system-ui, sans-serif; }
+.picker-list { display: flex; flex-direction: column; gap: 4px; max-height: min(260px, 40vh); overflow-y: auto; padding-right: 2px; }
+.picker-list button { text-align: left; display: flex; flex-direction: column; gap: 1px; flex-shrink: 0; }
+.picker-list .muted { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 
 .picked-icon {
   width: 18px; height: 18px; border-radius: 50%; border: 3px solid var(--accent);

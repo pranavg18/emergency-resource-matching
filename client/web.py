@@ -38,9 +38,10 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 STATIC_DIR = Path(__file__).with_name("web_static")
 PROXIED_PREFIXES = ("requests", "resources", "match")
 UPSTREAM_TIMEOUT_S = 15
-MAX_LISTED_REQUESTS = 500
+MAX_LISTED_CLOSED = 500  # closed history shown on the map; open requests are never capped
 CLOSED_STATUSES = ("COMPLETED", "CANCELLED")
 LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
+DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 def _error(status: int, code: str, message: str):
@@ -49,6 +50,19 @@ def _error(status: int, code: str, message: str):
 
 def _hostname(netloc: str) -> str:
     return (urlsplit(f"//{netloc}").hostname or "").lower()
+
+
+def _origin(scheme: str, netloc: str) -> Optional[tuple]:
+    """(scheme, hostname, effective port), or None when it is not a usable origin (e.g. "null")."""
+    scheme = scheme.lower()
+    try:
+        parts = urlsplit(f"{scheme}://{netloc}")
+        port = parts.port or DEFAULT_PORTS.get(scheme)
+    except ValueError:
+        return None
+    if scheme not in DEFAULT_PORTS or not parts.hostname:
+        return None
+    return scheme, parts.hostname.lower(), port
 
 
 def create_app(api_url: str = "http://localhost:8088", coordinator_url: str = "http://localhost:8008",
@@ -65,8 +79,12 @@ def create_app(api_url: str = "http://localhost:8088", coordinator_url: str = "h
             return _error(403, "FORBIDDEN_HOST", f"this client only answers on {', '.join(sorted(hosts))}")
         if request.method in ("POST", "PUT"):
             origin = request.headers.get("Origin")
-            if origin is not None and urlsplit(origin).netloc.lower() != request.host.lower():
-                return _error(403, "FORBIDDEN_ORIGIN", "writes are accepted only from this client's own page")
+            if origin is not None:
+                parts = urlsplit(origin)
+                sent = _origin(parts.scheme, parts.netloc)
+                if sent is None or sent != _origin(request.scheme, request.host):
+                    return _error(403, "FORBIDDEN_ORIGIN", "writes are accepted only from this client's own page")
+            # Every write carries a JSON body (the page sends {} where the API needs none).
             if request.mimetype != "application/json":
                 return _error(415, "UNSUPPORTED_MEDIA_TYPE", "send the body as application/json")
         return None
@@ -120,10 +138,10 @@ def create_app(api_url: str = "http://localhost:8088", coordinator_url: str = "h
 
     @app.get("/api/all-requests")
     def all_requests():
-        """Stored requests read through the coordinator: open ones first, then newest first.
+        """Stored requests read through the coordinator: every open one, then the newest closed ones.
 
-        The list is capped, and closed requests are the ones dropped, so an old
-        request that still needs action never disappears behind newer closed ones.
+        Only closed history is capped, so a request that still needs action is
+        always on the map and selectable, however many requests exist.
         """
         try:
             reply = http.get(f"{coordinator_url}/data", params={"prefix": "request:"}, timeout=UPSTREAM_TIMEOUT_S)
@@ -142,10 +160,11 @@ def create_app(api_url: str = "http://localhost:8088", coordinator_url: str = "h
             if isinstance(value, dict) and isinstance(value.get("id"), str) and isinstance(value.get("location"), dict):
                 values.append(value)
         values.sort(key=lambda v: str(v.get("created_at", "")), reverse=True)
-        values.sort(key=lambda v: v.get("status") in CLOSED_STATUSES)  # stable: open first, each newest first
-        open_count = sum(v.get("status") not in CLOSED_STATUSES for v in values)
-        return {"count": len(values), "open": open_count, "requests": values[:MAX_LISTED_REQUESTS],
-                "truncated": len(values) > MAX_LISTED_REQUESTS}
+        open_requests = [v for v in values if v.get("status") not in CLOSED_STATUSES]
+        closed = [v for v in values if v.get("status") in CLOSED_STATUSES]
+        return {"count": len(values), "open": len(open_requests), "closed": len(closed),
+                "requests": open_requests + closed[:MAX_LISTED_CLOSED],
+                "closed_omitted": max(0, len(closed) - MAX_LISTED_CLOSED)}
 
     return app
 

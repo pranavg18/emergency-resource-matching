@@ -18,7 +18,7 @@ const state = {
   requests: new Map(),
   resources: new Map(),
   selected: null, // {kind: "request" | "resource", id}
-  requestTotals: { total: 0, open: 0, truncated: false }, // across all stored requests, not just those listed
+  requestTotals: { total: 0, open: 0, closedOmitted: 0 }, // across all stored requests, not just those listed
   maxRadiusKm: 50,
   shownSelection: "", // what the selection panel currently shows; redraw only when it changes
 };
@@ -165,14 +165,32 @@ function markerClicked(kind, id) {
   }
   if (nearby.length <= 1) return select(kind, id);
 
+  const popup = L.popup({ maxWidth: 340 });
+  const box = document.createElement("div");
+  box.className = "picker";
   const list = document.createElement("div");
-  list.className = "picker";
-  list.append(textNode(`${nearby.length} records here:`));
-  const popup = L.popup({ maxWidth: 320 });
+  list.className = "picker-list";
   for (const item of nearby) {
-    list.append(button(tooltip(item.kind, item.value), () => { map.closePopup(popup); select(item.kind, item.id); }));
+    list.append(pickerRow(item, () => { map.closePopup(popup); select(item.kind, item.id); }));
   }
-  popup.setLatLng(marker.getLatLng()).setContent(list).openOn(map);
+  box.append(textNode(`${nearby.length} records here:`), list);
+  popup.setLatLng(marker.getLatLng()).setContent(box).openOn(map);
+}
+
+// One row per record: a short ID and status, then its details or label, so
+// records of the same type and status can still be told apart.
+function pickerRow({ kind, id, value }, onClick) {
+  const row = button("", onClick);
+  const head = document.createElement("strong");
+  head.textContent = kind === "request"
+    ? `Request ${id.slice(0, 8)} · ${value.type} · ${value.status}`
+    : `Resource ${id.slice(0, 8)} · ${value.type} · ${value.status} · ${value.availability} left`;
+  const note = document.createElement("span");
+  note.className = "muted";
+  const text = (kind === "request" ? value.details : "") || value.location.label || "";
+  note.textContent = text.length > 60 ? `${text.slice(0, 59)}…` : text;
+  row.append(head, note);
+  return row;
 }
 
 function requestMarker(v) {
@@ -224,11 +242,11 @@ function renderMarkers() {
     }
   }
 
-  const { total, open, truncated } = state.requestTotals;
-  const shown = truncated ? `showing the ${state.requests.size} most relevant of ${total} requests` : `${total} requests`;
-  $("counts").textContent = `${shown} (${open} open) · ${state.resources.size} resources`;
-  if (truncated) {
-    $("counts").title = "Open requests are always listed first; only older completed or cancelled ones are left off the map.";
+  const { total, open, closedOmitted } = state.requestTotals;
+  const omitted = closedOmitted ? ` · ${closedOmitted} oldest closed not shown` : "";
+  $("counts").textContent = `${total} requests (${open} open)${omitted} · ${state.resources.size} resources`;
+  if (closedOmitted) {
+    $("counts").title = "Every open request is on the map; only the oldest completed or cancelled ones are left off.";
   } else {
     $("counts").removeAttribute("title");
   }
@@ -332,7 +350,8 @@ function renderSelection() {
     const s = value.status;
     const statusPath = `requests/${value.id}/status`;
     actions.append(
-      button("Match now", () => act("Match request", "POST", `match/${value.id}`), s === "PENDING" || s === "UNMATCHED"),
+      // The match endpoint takes no input, but the proxy only accepts JSON writes, so send {}.
+      button("Match now", () => act("Match request", "POST", `match/${value.id}`, {}), s === "PENDING" || s === "UNMATCHED"),
       button("Start (in progress)", () => act("Start request", "PUT", statusPath, { status: "IN_PROGRESS" }), s === "MATCHED"),
       button("Complete", () => act("Complete request", "PUT", statusPath, { status: "COMPLETED" }), s === "IN_PROGRESS"),
       button("Cancel", () => act("Cancel request", "PUT", statusPath, { status: "CANCELLED" }), !CLOSED.has(s)),
@@ -427,7 +446,7 @@ async function refresh() {
     pill.textContent = ok ? "connected" : `problem: ${errorText([reqs, res, cluster].find((r) => !r.ok))}`;
     if (reqs.ok) {
       state.requests = new Map(reqs.data.requests.map((v) => [v.id, v]));
-      state.requestTotals = { total: reqs.data.count, open: reqs.data.open, truncated: reqs.data.truncated };
+      state.requestTotals = { total: reqs.data.count, open: reqs.data.open, closedOmitted: reqs.data.closed_omitted };
     }
     if (res.ok) state.resources = new Map(res.data.resources.map((v) => [v.id, v]));
     if (cluster.ok) renderCluster(cluster.data);
