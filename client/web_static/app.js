@@ -18,6 +18,7 @@ const state = {
   requests: new Map(),
   resources: new Map(),
   selected: null, // {kind: "request" | "resource", id}
+  requestTotals: { total: 0, open: 0, truncated: false }, // across all stored requests, not just those listed
   maxRadiusKm: 50,
   shownSelection: "", // what the selection panel currently shows; redraw only when it changes
 };
@@ -130,8 +131,48 @@ function tooltip(kind, v) {
     : `Resource · ${v.type} · ${v.status} · ${v.availability} left${where}`;
 }
 
+// Leaflet treats a string tooltip as HTML, and labels come from stored records,
+// so the tooltip is always a DOM node holding plain text.
+function textNode(text) {
+  const span = document.createElement("span");
+  span.textContent = text;
+  return span;
+}
+
 function setTooltip(marker, text) {
-  if (marker.getTooltip()) marker.setTooltipContent(text); else marker.bindTooltip(text);
+  if (marker.tooltipText === text) return;
+  marker.tooltipText = text;
+  if (marker.getTooltip()) marker.setTooltipContent(textNode(text)); else marker.bindTooltip(textNode(text));
+}
+
+// Records can share a spot (a request placed right at its resource), and a
+// resource marker would always cover the request beneath it. A click therefore
+// looks for every visible record drawn within a few pixels; with more than one
+// it offers a list to choose from, so each keeps its exact position.
+const OVERLAP_PX = 14;
+
+function markerClicked(kind, id) {
+  const marker = markers[kind].get(id);
+  const here = map.latLngToContainerPoint(marker.getLatLng());
+  const nearby = [];
+  for (const [otherKind, store] of [["request", state.requests], ["resource", state.resources]]) {
+    for (const [otherId, other] of markers[otherKind]) {
+      const value = store.get(otherId);
+      if (value && map.latLngToContainerPoint(other.getLatLng()).distanceTo(here) <= OVERLAP_PX) {
+        nearby.push({ kind: otherKind, id: otherId, value });
+      }
+    }
+  }
+  if (nearby.length <= 1) return select(kind, id);
+
+  const list = document.createElement("div");
+  list.className = "picker";
+  list.append(textNode(`${nearby.length} records here:`));
+  const popup = L.popup({ maxWidth: 320 });
+  for (const item of nearby) {
+    list.append(button(tooltip(item.kind, item.value), () => { map.closePopup(popup); select(item.kind, item.id); }));
+  }
+  popup.setLatLng(marker.getLatLng()).setContent(list).openOn(map);
 }
 
 function requestMarker(v) {
@@ -140,7 +181,7 @@ function requestMarker(v) {
   let marker = markers.request.get(v.id);
   if (!marker) {
     marker = L.circleMarker([v.location.lat, v.location.lon], style).addTo(requestsLayer);
-    marker.on("click", (e) => { L.DomEvent.stopPropagation(e); select("request", v.id); });
+    marker.on("click", (e) => { L.DomEvent.stopPropagation(e); markerClicked("request", v.id); });
     markers.request.set(v.id, marker);
   }
   marker.setLatLng([v.location.lat, v.location.lon]).setStyle(style);
@@ -154,7 +195,7 @@ function resourceMarker(v) {
   let marker = markers.resource.get(v.id);
   if (!marker) {
     marker = L.marker([v.location.lat, v.location.lon], { icon }).addTo(resourcesLayer);
-    marker.on("click", (e) => { L.DomEvent.stopPropagation(e); select("resource", v.id); });
+    marker.on("click", (e) => { L.DomEvent.stopPropagation(e); markerClicked("resource", v.id); });
     markers.resource.set(v.id, marker);
   }
   marker.setLatLng([v.location.lat, v.location.lon]).setIcon(icon);
@@ -183,8 +224,14 @@ function renderMarkers() {
     }
   }
 
-  const open = [...state.requests.values()].filter((v) => !CLOSED.has(v.status)).length;
-  $("counts").textContent = `${state.requests.size} requests (${open} open) · ${state.resources.size} resources`;
+  const { total, open, truncated } = state.requestTotals;
+  const shown = truncated ? `showing the ${state.requests.size} most relevant of ${total} requests` : `${total} requests`;
+  $("counts").textContent = `${shown} (${open} open) · ${state.resources.size} resources`;
+  if (truncated) {
+    $("counts").title = "Open requests are always listed first; only older completed or cancelled ones are left off the map.";
+  } else {
+    $("counts").removeAttribute("title");
+  }
 }
 
 function badge(text, colorVar) {
@@ -378,7 +425,10 @@ async function refresh() {
     const pill = $("connection");
     pill.className = `pill ${ok ? "ok" : "bad"}`;
     pill.textContent = ok ? "connected" : `problem: ${errorText([reqs, res, cluster].find((r) => !r.ok))}`;
-    if (reqs.ok) state.requests = new Map(reqs.data.requests.map((v) => [v.id, v]));
+    if (reqs.ok) {
+      state.requests = new Map(reqs.data.requests.map((v) => [v.id, v]));
+      state.requestTotals = { total: reqs.data.count, open: reqs.data.open, truncated: reqs.data.truncated };
+    }
     if (res.ok) state.resources = new Map(res.data.resources.map((v) => [v.id, v]));
     if (cluster.ok) renderCluster(cluster.data);
     renderMarkers();

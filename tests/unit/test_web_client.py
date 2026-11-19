@@ -131,3 +131,50 @@ def test_the_request_list_is_capped():
     body = client.get("/api/all-requests").get_json()
     assert len(body["requests"]) == MAX_LISTED_REQUESTS
     assert body["count"] == MAX_LISTED_REQUESTS + 10 and body["truncated"] is True
+
+
+def test_the_cap_drops_closed_requests_never_an_older_open_one():
+    def stored(i, status, hour):
+        return {"key": "request:x", "value": json.dumps({"id": i, "status": status, "location": {"lat": 0, "lon": 0},
+                                                          "created_at": f"2026-11-19T{hour:02d}:00:00.000Z"})}
+
+    # The one open request is the oldest record; newer closed requests alone would fill the cap.
+    records = [stored("old-open", "PENDING", 0)]
+    records += [stored(f"closed-{n}", "COMPLETED", 1 + n % 20) for n in range(MAX_LISTED_REQUESTS)]
+    client, _ = client_for(FakeResponse(200, {"records": records}))
+
+    body = client.get("/api/all-requests").get_json()
+
+    assert body["requests"][0]["id"] == "old-open"
+    assert body["count"] == MAX_LISTED_REQUESTS + 1 and body["open"] == 1 and body["truncated"] is True
+
+
+def test_writes_must_be_json():
+    client, session = client_for()
+    reply = client.post("/api/requests", data='{"type": "water"}', content_type="text/plain")
+    assert reply.status_code == 415 and reply.get_json()["error"]["code"] == "UNSUPPORTED_MEDIA_TYPE"
+    assert session.calls == []
+
+
+def test_writes_from_another_origin_are_refused():
+    client, session = client_for(FakeResponse(201, {"id": "r1"}))
+    foreign = client.post("/api/requests", json={}, headers={"Origin": "https://evil.example"})
+    assert foreign.status_code == 403 and foreign.get_json()["error"]["code"] == "FORBIDDEN_ORIGIN"
+    assert session.calls == []
+
+    own = client.post("/api/requests", json={}, headers={"Origin": "http://localhost"})
+    assert own.status_code == 201 and len(session.calls) == 1
+
+
+@pytest.mark.parametrize("host", ["evil.example", "evil.example:5050"])
+def test_a_rebound_hostname_is_refused(host):
+    client, session = client_for()
+    reply = client.get("/api/resources", headers={"Host": host})
+    assert reply.status_code == 403 and reply.get_json()["error"]["code"] == "FORBIDDEN_HOST"
+    assert session.calls == []
+
+
+@pytest.mark.parametrize("host", ["localhost:5050", "127.0.0.1:5050", "[::1]:5050"])
+def test_loopback_hostnames_are_answered(host):
+    client, _ = client_for(FakeResponse(200, {"count": 0, "resources": []}))
+    assert client.get("/api/resources", headers={"Host": host}).status_code == 200

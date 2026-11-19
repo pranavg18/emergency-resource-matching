@@ -15,6 +15,12 @@ The public API has no "list requests" endpoint (only GET /requests/{id}), so
 the map reads the request list from storage through the coordinator, as
 client.check does. That path is read-only; every change goes through the
 services.
+
+Other web pages open in the same browser can also reach this loopback port, so
+the proxy only answers its own page: the Host header must name this machine
+(which defeats DNS rebinding), a write that carries an Origin must come from
+this page's origin, and a write must be sent as JSON. A cross-site page cannot
+send a JSON body without a CORS preflight, which this server never approves.
 """
 
 from __future__ import annotations
@@ -23,7 +29,8 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
+from urllib.parse import urlsplit
 
 import requests
 from flask import Flask, Response, jsonify, request, send_from_directory
@@ -32,18 +39,37 @@ STATIC_DIR = Path(__file__).with_name("web_static")
 PROXIED_PREFIXES = ("requests", "resources", "match")
 UPSTREAM_TIMEOUT_S = 15
 MAX_LISTED_REQUESTS = 500
+CLOSED_STATUSES = ("COMPLETED", "CANCELLED")
+LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 
 def _error(status: int, code: str, message: str):
     return jsonify(error={"code": code, "message": message}), status
 
 
+def _hostname(netloc: str) -> str:
+    return (urlsplit(f"//{netloc}").hostname or "").lower()
+
+
 def create_app(api_url: str = "http://localhost:8088", coordinator_url: str = "http://localhost:8008",
-               session: Optional[requests.Session] = None) -> Flask:
+               session: Optional[requests.Session] = None, allowed_hosts: Iterable[str] = ()) -> Flask:
     api_url, coordinator_url = api_url.rstrip("/"), coordinator_url.rstrip("/")
     http = session or requests.Session()
+    hosts = {*LOOPBACK_HOSTS, *(h.lower() for h in allowed_hosts)}
     app = Flask(__name__, static_folder=None)
     app.json.sort_keys = False
+
+    @app.before_request
+    def only_this_page():
+        if _hostname(request.host) not in hosts:
+            return _error(403, "FORBIDDEN_HOST", f"this client only answers on {', '.join(sorted(hosts))}")
+        if request.method in ("POST", "PUT"):
+            origin = request.headers.get("Origin")
+            if origin is not None and urlsplit(origin).netloc.lower() != request.host.lower():
+                return _error(403, "FORBIDDEN_ORIGIN", "writes are accepted only from this client's own page")
+            if request.mimetype != "application/json":
+                return _error(415, "UNSUPPORTED_MEDIA_TYPE", "send the body as application/json")
+        return None
 
     def upstream_unavailable(what: str, exc: Exception):
         return _error(502, "UPSTREAM_UNAVAILABLE", f"cannot reach the {what}: {exc.__class__.__name__}. "
@@ -94,7 +120,11 @@ def create_app(api_url: str = "http://localhost:8088", coordinator_url: str = "h
 
     @app.get("/api/all-requests")
     def all_requests():
-        """Every stored request, newest first, read through the coordinator."""
+        """Stored requests read through the coordinator: open ones first, then newest first.
+
+        The list is capped, and closed requests are the ones dropped, so an old
+        request that still needs action never disappears behind newer closed ones.
+        """
         try:
             reply = http.get(f"{coordinator_url}/data", params={"prefix": "request:"}, timeout=UPSTREAM_TIMEOUT_S)
         except requests.RequestException as exc:
@@ -111,8 +141,10 @@ def create_app(api_url: str = "http://localhost:8088", coordinator_url: str = "h
             # Skip anything that is not a request record (e.g. left by another tool).
             if isinstance(value, dict) and isinstance(value.get("id"), str) and isinstance(value.get("location"), dict):
                 values.append(value)
-        values.sort(key=lambda v: v.get("created_at", ""), reverse=True)
-        return {"count": len(values), "requests": values[:MAX_LISTED_REQUESTS],
+        values.sort(key=lambda v: str(v.get("created_at", "")), reverse=True)
+        values.sort(key=lambda v: v.get("status") in CLOSED_STATUSES)  # stable: open first, each newest first
+        open_count = sum(v.get("status") not in CLOSED_STATUSES for v in values)
+        return {"count": len(values), "open": open_count, "requests": values[:MAX_LISTED_REQUESTS],
                 "truncated": len(values) > MAX_LISTED_REQUESTS}
 
     return app
@@ -127,7 +159,7 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5050)
     args = parser.parse_args()
-    app = create_app(args.api, args.coordinator)
+    app = create_app(args.api, args.coordinator, allowed_hosts=[args.host])
     print(f"Open http://{args.host}:{args.port}  (API {args.api}, coordinator {args.coordinator})", flush=True)
     app.run(host=args.host, port=args.port, threaded=True)
 

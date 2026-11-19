@@ -155,7 +155,9 @@ storage node, so a storage failure and recovery can be watched live.
 `/api/resources`, `/api/match`) to the API, so the browser talks to one origin
 and nothing in the cluster changes; it is a client, like the CLI. The public
 API has no request-listing endpoint, so the map reads the request list from the
-coordinator, as `client.check` does; that path is read-only. Use `--api`,
+coordinator, as `client.check` does; that path is read-only. The client only
+answers on loopback hostnames, and accepts writes only as JSON from its own
+page, so other sites open in the browser cannot use it. Use `--api`,
 `--coordinator` and `--port` for other addresses. The map uses
 [Leaflet](https://leafletjs.com) with OpenStreetMap tiles, both loaded over the
 internet.
