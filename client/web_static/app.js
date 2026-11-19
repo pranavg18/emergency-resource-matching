@@ -27,24 +27,7 @@ const $ = (id) => document.getElementById(id);
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const fmt = (n) => Number(n).toFixed(6);
 
-// --- API --------------------------------------------------------------------
-
-async function api(method, path, body) {
-  const init = { method, headers: {} };
-  if (body !== undefined) {
-    init.headers["Content-Type"] = "application/json";
-    init.body = JSON.stringify(body);
-  }
-  let response;
-  try {
-    response = await fetch(`/api/${path}`, init);
-  } catch (err) {
-    return { ok: false, status: 0, data: { error: { code: "NETWORK", message: String(err) } } };
-  }
-  let data = null;
-  try { data = await response.json(); } catch { data = null; }
-  return { ok: response.ok, status: response.status, data };
-}
+// --- API (api() itself is in api.js) ----------------------------------------
 
 function errorText(result) {
   const error = result.data && result.data.error;
@@ -350,8 +333,7 @@ function renderSelection() {
     const s = value.status;
     const statusPath = `requests/${value.id}/status`;
     actions.append(
-      // The match endpoint takes no input, but the proxy only accepts JSON writes, so send {}.
-      button("Match now", () => act("Match request", "POST", `match/${value.id}`, {}), s === "PENDING" || s === "UNMATCHED"),
+      button("Match now", () => act("Match request", "POST", `match/${value.id}`), s === "PENDING" || s === "UNMATCHED"),
       button("Start (in progress)", () => act("Start request", "PUT", statusPath, { status: "IN_PROGRESS" }), s === "MATCHED"),
       button("Complete", () => act("Complete request", "PUT", statusPath, { status: "COMPLETED" }), s === "IN_PROGRESS"),
       button("Cancel", () => act("Cancel request", "PUT", statusPath, { status: "CANCELLED" }), !CLOSED.has(s)),

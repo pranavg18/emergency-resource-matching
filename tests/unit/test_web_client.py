@@ -49,7 +49,7 @@ def test_the_page_and_its_assets_are_served():
     client, _ = client_for()
     page = client.get("/")
     assert page.status_code == 200 and b"leaflet" in page.data.lower()
-    for asset in ("/static/app.js", "/static/style.css"):
+    for asset in ("/static/api.js", "/static/app.js", "/static/style.css"):
         assert client.get(asset).status_code == 200
 
 
